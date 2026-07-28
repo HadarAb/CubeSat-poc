@@ -67,3 +67,44 @@ vcpkg_installed/
 # test output & cache
 Testing/
 .cache/
+
+# ==========================================
+# STM32 & Embedded Specific
+# ==========================================
+Debug/
+Release/
+*.elf
+*.bin
+*.hex
+*.map
+*.su
+*.list
+.mxproject
+.metadata/
+*.launch
+
+# ==========================================
+# Python Specific
+# ==========================================
+# Byte-compiled / optimized files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual Environments
+venv/
+env/
+.venv
+.env
+
+# Jupyter Notebook (if you use it for scripts/analysis)
+.ipynb_checkpoints
+
+# Testing and Coverage
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Python package manager logs
+pip-log.txt
+pip-delete-this-directory.txt
