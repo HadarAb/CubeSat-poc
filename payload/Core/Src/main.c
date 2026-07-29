@@ -23,7 +23,8 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-
+#include "I2CSlave.hpp"
+#include "PayloadSim.hpp"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -90,7 +91,12 @@ int main(void)
   MX_GPIO_Init();
   MX_I2C1_Init();
   /* USER CODE BEGIN 2 */
+  PayloadSim_Init();
 
+  if (I2CSlave_Init(&hi2c1) != HAL_OK)
+  {
+    Error_Handler();
+  }
   /* USER CODE END 2 */
 
   /* Initialize leds */
@@ -103,7 +109,7 @@ int main(void)
   /* USER CODE BEGIN WHILE */
   while (1)
   {
-
+    PayloadSim_Tick();
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */

@@ -23,7 +23,8 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-
+#include "DebugUart.hpp"
+#include "I2CMaster.hpp"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -45,7 +46,16 @@
 /* Private variables ---------------------------------------------------------*/
 
 /* USER CODE BEGIN PV */
-
+PayloadData_t g_last_payload_data;
+volatile HAL_StatusTypeDef g_last_whoami_status = HAL_ERROR;
+volatile HAL_StatusTypeDef g_last_data_status = HAL_ERROR;
+volatile uint8_t g_last_payload_id = 0u;
+volatile uint8_t g_last_crc_valid = 0u;
+volatile uint32_t g_last_calculated_crc = 0u;
+volatile uint32_t g_i2c_success_count = 0u;
+volatile uint32_t g_i2c_error_count = 0u;
+volatile uint32_t g_crc_success_count = 0u;
+volatile uint32_t g_crc_error_count = 0u;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -90,7 +100,8 @@ int main(void)
   MX_GPIO_Init();
   MX_I2C1_Init();
   /* USER CODE BEGIN 2 */
-
+  I2CMaster_Init(&hi2c1);
+  DebugUart_Init();
   /* USER CODE END 2 */
 
   /* Initialize leds */
@@ -103,7 +114,63 @@ int main(void)
   /* USER CODE BEGIN WHILE */
   while (1)
   {
+    uint8_t payload_id = 0u;
+    uint8_t crc_valid = 0u;
+    uint32_t calculated_crc = 0u;
 
+    HAL_StatusTypeDef whoami_status =
+        I2CMaster_ReadWhoAmI(
+            PAYLOAD_I2C_ADDRESS_HAL,
+            &payload_id);
+
+    g_last_whoami_status = whoami_status;
+    g_last_payload_id = payload_id;
+    DebugUart_ReportWhoAmI(whoami_status, payload_id);
+
+    if ((whoami_status == HAL_OK)
+        && (payload_id == PAYLOAD_NODE_ID))
+    {
+      HAL_StatusTypeDef data_status =
+          I2CMaster_ReadPayloadData(
+              PAYLOAD_I2C_ADDRESS_HAL,
+              &g_last_payload_data,
+              &crc_valid,
+              &calculated_crc);
+
+      g_last_data_status = data_status;
+      g_last_crc_valid = crc_valid;
+      g_last_calculated_crc = calculated_crc;
+
+      if (data_status == HAL_OK)
+      {
+        ++g_i2c_success_count;
+
+        if (crc_valid != 0u)
+        {
+          ++g_crc_success_count;
+        }
+        else
+        {
+          ++g_crc_error_count;
+        }
+      }
+      else
+      {
+        ++g_i2c_error_count;
+      }
+
+      DebugUart_ReportPayload(
+          data_status,
+          &g_last_payload_data,
+          crc_valid,
+          calculated_crc);
+    }
+    else
+    {
+      ++g_i2c_error_count;
+    }
+
+    HAL_Delay(500u);
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
