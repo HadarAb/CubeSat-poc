@@ -19,6 +19,7 @@
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
 #include "i2c.h"
+#include "usart.h"
 #include "gpio.h"
 
 /* Private includes ----------------------------------------------------------*/
@@ -89,7 +90,15 @@ int main(void)
   /* Initialize all configured peripherals */
   MX_GPIO_Init();
   MX_I2C1_Init();
+  MX_USART2_UART_Init();
   /* USER CODE BEGIN 2 */
+
+	/*
+	 * Turn on I2C Listen Mode with Interrupts (IT).
+	 * This primes the hardware to listen for our address (0x04) on the bus.
+	 * Without this, the Slave will ignore the Master completely.
+	 */
+	HAL_I2C_EnableListen_IT(&hi2c1);
 
   /* USER CODE END 2 */
 
@@ -161,6 +170,39 @@ void SystemClock_Config(void)
 }
 
 /* USER CODE BEGIN 4 */
+
+// rx_byte stores data sent from the obc to the payload
+static uint8_t rx_byte;
+// tx_byte is the "magic answer" we send back to the obc to prove connection
+static uint8_t tx_byte = 0xAB; // the magic answer
+
+// callback 1: address match - triggered automatically by HAL when the obc puts our address (0x04) on the bus
+void HAL_I2C_AddrCallback(I2C_HandleTypeDef *hi2c, uint8_t direction, uint16_t addrMatchCode)
+{
+	// Check if the Master wants to WRITE data TO us
+	if (direction == I2C_DIRECTION_TRANSMIT) {
+		// Arm the receive interrupt to catch the incoming byte
+		HAL_I2C_Slave_Seq_Receive_IT(hi2c, &rx_byte, 1, I2C_LAST_FRAME);
+	} else {
+		// the Master wants to READ data FROM us
+		// Arm the transmit interrupt to send our magic byte (0xAB)
+		HAL_I2C_Slave_Seq_Transmit_IT(hi2c, &tx_byte, 1, I2C_LAST_FRAME);
+	}
+}
+
+// callback 2: listen complete. triggered when the current I2C transaction (read or write) finishes successfully
+void HAL_I2C_ListenCpltCallback(I2C_HandleTypeDef *hi2c)
+{
+	// re-arm the listen mode, otherwise the slave goes deaf after one message.
+	HAL_I2C_EnableListen_IT(hi2c);
+}
+
+// callback 3: error handling. triggered if there's a bus error, electrical noise, or a NACK (Not Acknowledge)
+void HAL_I2C_ErrorCallback(I2C_HandleTypeDef *hi2c)
+{
+	// re-arm listen mode to recover gracefully and wait for the next attempt
+	HAL_I2C_EnableListen_IT(hi2c);
+}
 
 /* USER CODE END 4 */
 

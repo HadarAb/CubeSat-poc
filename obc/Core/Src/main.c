@@ -18,12 +18,16 @@
 /* USER CODE END Header */
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
+#include "fatfs.h"
 #include "i2c.h"
+#include "spi.h"
+#include "usart.h"
 #include "gpio.h"
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-
+#include <stdio.h>
+#include <string.h>
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -89,7 +93,36 @@ int main(void)
   /* Initialize all configured peripherals */
   MX_GPIO_Init();
   MX_I2C1_Init();
+  MX_SPI1_Init();
+  MX_USART2_UART_Init();
+  MX_FATFS_Init();
   /* USER CODE BEGIN 2 */
+
+  /* obc — smoke test */
+  FATFS fs;
+  FIL f;
+  UINT bw;
+
+  char *start_msg = "Starting SD test...\r\n";
+  HAL_UART_Transmit(&huart2, (uint8_t*)start_msg, strlen(start_msg), HAL_MAX_DELAY);
+
+  FRESULT mount_res = f_mount(&fs, "", 1);
+
+  char debug_msg[60];
+  int len = sprintf(debug_msg, "f_mount result: %d\r\n", mount_res);
+  HAL_UART_Transmit(&huart2, (uint8_t*)debug_msg, len, HAL_MAX_DELAY);
+
+  if (mount_res == FR_OK) {
+	  FRESULT open_res = f_open(&f, "HELLO.TXT", FA_CREATE_ALWAYS | FA_WRITE);
+	  if (open_res == FR_OK) {
+		  f_write(&f, "cubesat\r\n", 9, &bw);
+		  f_close(&f);
+		  HAL_UART_Transmit(&huart2, (uint8_t*)"SD OK & Wrote!\r\n", 16, HAL_MAX_DELAY);
+	  } else {
+		  int err_len = sprintf(debug_msg, "f_open failed with: %d\r\n", open_res);
+		  HAL_UART_Transmit(&huart2, (uint8_t*)debug_msg, err_len, HAL_MAX_DELAY);
+	  }
+	}
 
   /* USER CODE END 2 */
 
@@ -107,6 +140,20 @@ int main(void)
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
+	  uint8_t val = 0;
+
+	  // master read request - request 1 byte from slave address 0x04 with a 100ms timeout limit
+	  if (HAL_I2C_Master_Receive(&hi2c1, 0x04, &val, 1, 100) == HAL_OK) {
+		  // print the received byte via UART upon successful reception
+		  printf("payload says 0x%02X\r\n", val);
+
+		  // toggle the external RGB RED LED to visually indicate a successful read.
+		  // We use RGB_RED_GPIO_Port and RGB_RED_Pin instead of PA5 to avoid hardware conflicts with the SPI clock (SCK).
+		  HAL_GPIO_TogglePin(RGB_RED_GPIO_Port, RGB_RED_Pin);
+	  }
+
+	  // wait 500 ms before initiating the next request
+	  HAL_Delay(500);
   }
   /* USER CODE END 3 */
 }
@@ -161,7 +208,12 @@ void SystemClock_Config(void)
 }
 
 /* USER CODE BEGIN 4 */
+extern UART_HandleTypeDef huart2;
 
+int __io_putchar(int ch) {
+	HAL_UART_Transmit(&huart2, (uint8_t *)&ch, 1, HAL_MAX_DELAY);
+	return ch;
+}
 /* USER CODE END 4 */
 
 /**
