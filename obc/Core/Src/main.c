@@ -28,6 +28,7 @@
 /* USER CODE BEGIN Includes */
 #include <stdio.h>
 #include <string.h>
+#include "../../../common/bus_config.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -93,9 +94,9 @@ int main(void)
   /* Initialize all configured peripherals */
   MX_GPIO_Init();
   MX_I2C1_Init();
-  MX_SPI1_Init();
   MX_USART2_UART_Init();
   MX_FATFS_Init();
+  MX_SPI1_Init();
   /* USER CODE BEGIN 2 */
 
   /* obc — smoke test */
@@ -124,6 +125,17 @@ int main(void)
 	  }
 	}
 
+
+  // --------------TEST I2C---------------
+    if (HAL_GPIO_ReadPin(GPIOB, GPIO_PIN_8) == GPIO_PIN_RESET ||
+        HAL_GPIO_ReadPin(GPIOB, GPIO_PIN_9) == GPIO_PIN_RESET) {
+
+        char *err_bus = "BUS ERROR: SDA or SCL is stuck LOW!\r\n";
+        HAL_UART_Transmit(&huart2, (uint8_t*)err_bus, strlen(err_bus), HAL_MAX_DELAY);
+    } else {
+        char *ok_bus = "I2C Bus voltage is HIGH (OK)\r\n";
+        HAL_UART_Transmit(&huart2, (uint8_t*)ok_bus, strlen(ok_bus), HAL_MAX_DELAY);
+    }
   /* USER CODE END 2 */
 
   /* Initialize leds */
@@ -143,13 +155,20 @@ int main(void)
 	  uint8_t val = 0;
 
 	  // master read request - request 1 byte from slave address 0x04 with a 100ms timeout limit
-	  if (HAL_I2C_Master_Receive(&hi2c1, 0x04, &val, 1, 100) == HAL_OK) {
-		  // print the received byte via UART upon successful reception
-		  printf("payload says 0x%02X\r\n", val);
+	  // use the common macro NODE_ADDR_PAYLOAD_8BIT (from ../../../common/bus_config.h)
+	  if (HAL_I2C_Master_Receive(&hi2c1, NODE_ADDR_PAYLOAD_8BIT, &val, 1, 100) == HAL_OK) {		  // print the received byte via UART upon successful reception
+		  char msg[40];
+		  int len = sprintf(msg, "payload says 0x%02X\r\n", val);
+		  HAL_UART_Transmit(&huart2, (uint8_t*)msg, len, HAL_MAX_DELAY);
 
 		  // toggle the external RGB RED LED to visually indicate a successful read.
 		  // We use RGB_RED_GPIO_Port and RGB_RED_Pin instead of PA5 to avoid hardware conflicts with the SPI clock (SCK).
 		  HAL_GPIO_TogglePin(RGB_RED_GPIO_Port, RGB_RED_Pin);
+	  } else {
+		  char err_msg[60];
+		  uint32_t err_code = HAL_I2C_GetError(&hi2c1);
+		  int len = sprintf(err_msg, "Timeout/Error! HAL_Err: 0x%08lX, ISR: 0x%08lX\r\n", err_code, I2C1->ISR);
+		  HAL_UART_Transmit(&huart2, (uint8_t*)err_msg, len, HAL_MAX_DELAY);
 	  }
 
 	  // wait 500 ms before initiating the next request
