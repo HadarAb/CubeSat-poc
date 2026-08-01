@@ -1,3 +1,4 @@
+/* Public interface for generated payload telemetry and CRC-fault testing. */
 #pragma once
 
 #include "../../common/protocol.h"
@@ -6,7 +7,10 @@
 extern "C" {
 #endif
 
+/* Creates the initial simulated payload sample. */
 void PayloadSim_Init(void);
+
+/* Updates the simulated sample when the 500 ms period has elapsed. */
 void PayloadSim_Tick(void);
 
 /*

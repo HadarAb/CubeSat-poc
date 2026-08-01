@@ -1,3 +1,4 @@
+/* Implements framed UART parsing, CRC validation, transmission, and interrupt buffering. */
 #include "UartProtocol.hpp"
 
 #include "../../common/crc32.h"
@@ -7,7 +8,6 @@
 
 namespace
 {
-constexpr uint32_t UartBaudRate = 115200u;
 constexpr uint16_t RxQueueSize = 128u;
 
 volatile uint8_t rx_queue[RxQueueSize] = {};
@@ -20,6 +20,7 @@ uint16_t frame_count = 0u;
 uint16_t expected_frame_size = 0u;
 uint16_t debug_sequence = 0u;
 
+/* Clears the partially collected UART frame. */
 void ResetFrameParser(void)
 {
     frame_count = 0u;
@@ -44,7 +45,7 @@ void WriteBytes(const uint8_t* bytes_arr, uint16_t size)
 {
     for (uint16_t index = 0u; index < size; ++index)
     {
-    	// check uart transmit register is empty
+        // check uart transmit register is empty
         while ((USART2->ISR & USART_ISR_TXE) == 0u)
         {
         }
@@ -64,17 +65,17 @@ void WriteBytes(const uint8_t* bytes_arr, uint16_t size)
  * */
 uint8_t ConsumeByte(uint8_t byte, uint8_t* msg_type, uint16_t* sequence)
 {
-	// get first 8 and 16 bits to check is it a start of a msg
+    // get first 8 and 16 bits to check is it a start of a msg
     const uint8_t start_low = static_cast<uint8_t>(UART_FRAME_START);
     const uint8_t start_high = static_cast<uint8_t>(UART_FRAME_START >> 8u);
 
     // if its the first byte we still didnt read
     if (frame_count == 0u)
     {
-    	// check if we are at the start of the frame
+        // check if we are at the start of the frame
         if (byte == start_low)
         {
-        	//write it to the buffer
+            //write it to the buffer
             frame_buffer[0] = byte;
             frame_count = 1u;
         }
@@ -90,9 +91,9 @@ uint8_t ConsumeByte(uint8_t byte, uint8_t* msg_type, uint16_t* sequence)
             frame_buffer[1] = byte;
             frame_count = 2u;
         }
-        // check if its the first part of the starting bit again
         else
         {
+            // check if its the first part of the starting bit again
             BeginFrameWithByte(byte);
         }
 
@@ -123,8 +124,9 @@ uint8_t ConsumeByte(uint8_t byte, uint8_t* msg_type, uint16_t* sequence)
             return 0u;
         }
 
-        expected_frame_size = static_cast<uint16_t>(UART_FRAME_HEADER_SIZE+ header.payload_length
-        												+ UART_FRAME_CRC_SIZE);
+        expected_frame_size = static_cast<uint16_t>(UART_FRAME_HEADER_SIZE
+                                                     + header.payload_length
+                                                     + UART_FRAME_CRC_SIZE);
     }
     if ((expected_frame_size == 0u) || (frame_count < expected_frame_size))
     {
@@ -134,19 +136,13 @@ uint8_t ConsumeByte(uint8_t byte, uint8_t* msg_type, uint16_t* sequence)
     UartFrameHeader_t header = {};
     uint32_t received_crc = 0u;
     std::memcpy(&header, frame_buffer, sizeof(header));
-    std::memcpy(&received_crc,&frame_buffer[expected_frame_size - UART_FRAME_CRC_SIZE],
-        sizeof(received_crc));
+    std::memcpy(&received_crc,
+                &frame_buffer[expected_frame_size - UART_FRAME_CRC_SIZE],
+                sizeof(received_crc));
 
-    const uint32_t calculated_crc = Protocol_Crc32(frame_buffer,expected_frame_size - UART_FRAME_CRC_SIZE);
-    uint8_t frame_is_valid = 0u;
-
-	if(received_crc == calculated_crc) {
-    	frame_is_valid = 1u;
-    }
-    else {
-    	frame_is_valid = 0u;
-    }
-
+    const uint32_t calculated_crc =
+        Protocol_Crc32(frame_buffer, expected_frame_size - UART_FRAME_CRC_SIZE);
+    const uint8_t frame_is_valid = (received_crc == calculated_crc) ? 1u : 0u;
 
     if (frame_is_valid != 0u)
     {
@@ -160,7 +156,7 @@ uint8_t ConsumeByte(uint8_t byte, uint8_t* msg_type, uint16_t* sequence)
 
         UartPayload_t error = {};
         error.status = UART_STATUS_BAD_REQUEST;
-        UartProtocol_SendFrame(UART_MSG_ERROR, header.sequence, &error,sizeof(error));
+        UartProtocol_SendFrame(UART_MSG_ERROR, header.sequence, &error, sizeof(error));
     }
 
     ResetFrameParser();
@@ -170,21 +166,20 @@ uint8_t ConsumeByte(uint8_t byte, uint8_t* msg_type, uint16_t* sequence)
 
 void UartProtocol_Init(void)
 {
-    __HAL_RCC_USART2_CLK_ENABLE();
+    rx_head = 0u;
+    rx_tail = 0u;
+    rx_overflow_count = 0u;
+    ResetFrameParser();
 
-    USART2->CR1 = 0u;
-    USART2->CR2 = 0u;
-    USART2->CR3 = 0u;
-    USART2->BRR = (HAL_RCC_GetPCLK1Freq() + (UartBaudRate / 2u)) / UartBaudRate;
-    USART2->ICR = USART_ICR_ORECF | USART_ICR_FECF| USART_ICR_NCF;
-    USART2->CR1 = USART_CR1_TE | USART_CR1_RE| USART_CR1_RXNEIE | USART_CR1_UE;
+    USART2->ICR = USART_ICR_ORECF | USART_ICR_FECF | USART_ICR_NCF;
+    SET_BIT(USART2->CR1, USART_CR1_RXNEIE);
 
     HAL_NVIC_SetPriority(USART2_IRQn, 5u, 0u);
     HAL_NVIC_EnableIRQ(USART2_IRQn);
 }
 
 /* check if we got a full message already  */
-uint8_t UartProtocol_TrygetMessage(uint8_t* msg_type,uint16_t* sequence)
+extern "C" uint8_t UartProtocol_TryReceiveMessage(uint8_t* msg_type, uint16_t* sequence)
 {
     if ((msg_type == nullptr) || (sequence == nullptr))
     {
@@ -206,8 +201,8 @@ uint8_t UartProtocol_TrygetMessage(uint8_t* msg_type,uint16_t* sequence)
 }
 
 /* helps you send a full frame threw UART */
-uint8_t UartProtocol_SendFrame(uint8_t msg_type,uint16_t sequence, const void* payload,
-								uint16_t payload_length)
+uint8_t UartProtocol_SendFrame(uint8_t msg_type, uint16_t sequence,
+                               const void* payload, uint16_t payload_length)
 {
     if ((payload_length > UART_MAX_PAYLOAD_SIZE) || ((payload_length > 0u) && (payload == nullptr)))
     {
@@ -215,16 +210,21 @@ uint8_t UartProtocol_SendFrame(uint8_t msg_type,uint16_t sequence, const void* p
     }
     // add header to the frame
     uint8_t frame[UART_MAX_FRAME_SIZE] = {};
-    const UartFrameHeader_t header = {UART_FRAME_START,msg_type,sequence,HAL_GetTick(),payload_length};
+    const UartFrameHeader_t header = {
+        UART_FRAME_START,
+        msg_type,
+        sequence,
+        HAL_GetTick(),
+        payload_length
+    };
 
     std::memcpy(frame, &header, sizeof(header));
 
     // add the payload to the frame
     if (payload_length > 0u)
     {
-        std::memcpy(&frame[UART_FRAME_HEADER_SIZE],payload,payload_length);
+        std::memcpy(&frame[UART_FRAME_HEADER_SIZE], payload, payload_length);
     }
-
 
     const uint16_t crc_offset = UART_FRAME_HEADER_SIZE + payload_length;
     const uint32_t crc = Protocol_Crc32(frame, crc_offset);
@@ -249,22 +249,23 @@ void SendUartMsg(const char* text)
     }
 
     ++debug_sequence;
-    UartProtocol_SendFrame(UART_MSG_DEBUG_TEXT,debug_sequence,text,length);
+    UartProtocol_SendFrame(UART_MSG_DEBUG_TEXT, debug_sequence, text, length);
 }
 
-extern "C" void USART2_IRQHandler(void)
+/* Handles USART errors and queues one received byte without blocking. */
+extern "C" void UartProtocol_HandleInterrupt(void)
 {
     const uint32_t status = USART2->ISR;
 
     if ((status & (USART_ISR_ORE | USART_ISR_FE | USART_ISR_NE)) != 0u)
     {
-        USART2->ICR = USART_ICR_ORECF| USART_ICR_FECF| USART_ICR_NCF;
+        USART2->ICR = USART_ICR_ORECF | USART_ICR_FECF | USART_ICR_NCF;
     }
 
     if ((status & USART_ISR_RXNE) != 0u)
     {
         const uint8_t byte = static_cast<uint8_t>(USART2->RDR);
-        const uint16_t next_head =static_cast<uint16_t>((rx_head + 1u) % RxQueueSize);
+        const uint16_t next_head = static_cast<uint16_t>((rx_head + 1u) % RxQueueSize);
 
         if (next_head != rx_tail)
         {

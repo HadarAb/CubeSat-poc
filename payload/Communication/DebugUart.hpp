@@ -1,3 +1,4 @@
+/* Public interface for the payload's blocking transmit-only debug UART. */
 #pragma once
 
 #ifdef __cplusplus
@@ -20,6 +21,8 @@ void DebugUart_Init(void);
  * Do not call these blocking functions directly from an interrupt callback.
  */
 void DebugUart_Print(const char* text);
+
+/* Formats and sends one debug message using printf-style arguments. */
 void DebugUart_Printf(const char* format, ...);
 
 #ifdef __cplusplus

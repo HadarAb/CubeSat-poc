@@ -1,3 +1,4 @@
+/* Implements the payload-side I2C register protocol and HAL callbacks. */
 #include "I2CSlave.hpp"
 
 #include "../../common/protocol.h"
@@ -56,8 +57,9 @@ HAL_StatusTypeDef I2CSlave_Init(I2C_HandleTypeDef* i2c_handle)
  * hi2c : context of the slave you want to write
  * address_match_code to who this msg
  */
-extern "C" void HAL_I2C_AddrCallback(I2C_HandleTypeDef* hi2c,uint8_t transfer_direction,
-										uint16_t address_match_code)
+extern "C" void HAL_I2C_AddrCallback(I2C_HandleTypeDef* hi2c,
+                                     uint8_t transfer_direction,
+                                     uint16_t address_match_code)
 {
     (void)address_match_code;
 
@@ -68,10 +70,9 @@ extern "C" void HAL_I2C_AddrCallback(I2C_HandleTypeDef* hi2c,uint8_t transfer_di
 
     if (transfer_direction == I2C_DIRECTION_TRANSMIT)
     {
-
-    	//prepares the slave to receive one byte from the master
+        //prepares the slave to receive one byte from the master
         receive_state = ReceiveState::Register;
-        (void)HAL_I2C_Slave_Seq_Receive_IT(hi2c,&received_byte,1u,I2C_FIRST_FRAME);
+        (void)HAL_I2C_Slave_Seq_Receive_IT(hi2c, &received_byte, 1u, I2C_FIRST_FRAME);
         return;
     }
 
@@ -80,21 +81,22 @@ extern "C" void HAL_I2C_AddrCallback(I2C_HandleTypeDef* hi2c,uint8_t transfer_di
         transmit_node_id = PAYLOAD_NODE_ID;
 
         // send back slave ID
-        (void)HAL_I2C_Slave_Seq_Transmit_IT(hi2c,&transmit_node_id,sizeof(transmit_node_id),I2C_LAST_FRAME);
+        (void)HAL_I2C_Slave_Seq_Transmit_IT(hi2c, &transmit_node_id,
+                                            sizeof(transmit_node_id), I2C_LAST_FRAME);
     }
     else if (selected_register == REG_DATA)
     {
-    	// send back data
+        // send back data
         PayloadSim_PrepareTransmitData(&transmit_data);
-        (void)HAL_I2C_Slave_Seq_Transmit_IT(hi2c,reinterpret_cast<uint8_t*>(&transmit_data),
-        									PAYLOAD_DATA_WIRE_SIZE,I2C_LAST_FRAME);
+        (void)HAL_I2C_Slave_Seq_Transmit_IT(hi2c, reinterpret_cast<uint8_t*>(&transmit_data),
+                                           PAYLOAD_DATA_WIRE_SIZE, I2C_LAST_FRAME);
     }
     else
     {
-    	// sends error
+        // sends error
         transmit_node_id = 0xFFu;
-        (void)HAL_I2C_Slave_Seq_Transmit_IT(hi2c,&transmit_node_id,
-        								   sizeof(transmit_node_id),I2C_LAST_FRAME);
+        (void)HAL_I2C_Slave_Seq_Transmit_IT(hi2c, &transmit_node_id,
+                                            sizeof(transmit_node_id), I2C_LAST_FRAME);
     }
 }
 
@@ -118,16 +120,15 @@ extern "C" void HAL_I2C_SlaveRxCpltCallback(I2C_HandleTypeDef* hi2c)
         if (selected_register == REG_SETBATT)
         {
             receive_state = ReceiveState::BatteryValue;
-            (void)HAL_I2C_Slave_Seq_Receive_IT(hi2c,&received_byte,1u,I2C_LAST_FRAME);
+            (void)HAL_I2C_Slave_Seq_Receive_IT(hi2c, &received_byte, 1u, I2C_LAST_FRAME);
         }
 
         return;
     }
 
-
-     // REG_SETBATT is reserved for the future EPS node. Payload accepts and
-     // consumes the byte so the shared register protocol remains testable,
-     // but it deliberately does not change Payload battery data.
+    // REG_SETBATT is reserved for the future EPS node. Payload accepts and
+    // consumes the byte so the shared register protocol remains testable,
+    // but it deliberately does not change Payload battery data.
 
     receive_state = ReceiveState::Register;
 }
@@ -144,8 +145,6 @@ extern "C" void HAL_I2C_ListenCpltCallback(I2C_HandleTypeDef* hi2c)
         (void)HAL_I2C_EnableListen_IT(hi2c);
     }
 }
-
-
 /*
  * Called automatically when an I2C error occurs.
  * Resets the receive state and enables listening again

@@ -108,3 +108,8 @@ htmlcov/
 # Python package manager logs
 pip-log.txt
 pip-delete-this-directory.txt
+
+# Local IDE metadata
+.idea/
+common/.project
+**/.settings/stm32cubeide.project.prefs

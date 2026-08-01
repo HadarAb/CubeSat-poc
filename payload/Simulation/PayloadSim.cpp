@@ -1,3 +1,4 @@
+/* Generates changing payload telemetry and occasional intentional CRC faults. */
 #include "PayloadSim.hpp"
 
 #include "../../common/crc32.h"
@@ -8,7 +9,6 @@
 namespace
 {
 constexpr uint32_t SimulationPeriodMs = 500u;
-
 
 PayloadData_t current_data = {};
 uint32_t last_simulation_tick = 0u;
@@ -25,6 +25,7 @@ uint32_t XorShift32(uint32_t& state)
     return state;
 }
 
+/* Limits a simulated measurement to its valid range. */
 int32_t Clamp(int32_t value, int32_t minimum, int32_t maximum)
 {
     if (value < minimum)
@@ -43,8 +44,8 @@ int32_t Clamp(int32_t value, int32_t minimum, int32_t maximum)
 //calculates new CRC from the sample
 void UpdateCrc(PayloadData_t& sample)
 {
-    sample.crc32 = Protocol_Crc32( reinterpret_cast<const uint8_t*>(&sample),
-    								PAYLOAD_DATA_CRC_SIZE);
+    sample.crc32 = Protocol_Crc32(reinterpret_cast<const uint8_t*>(&sample),
+                                  PAYLOAD_DATA_CRC_SIZE);
 }
 
 // copies the sample into the shared verb
@@ -109,8 +110,6 @@ void PayloadSim_Tick(void)
     }
 
     last_simulation_tick = current_tick;
-
-
     PayloadData_t next_data = {};
     CopyCurrentSample(next_data);
 
@@ -121,11 +120,8 @@ void PayloadSim_Tick(void)
         static_cast<int32_t>(XorShift32(simulation_rng_state) % 5u) - 2;
     int32_t radiation_change =
         static_cast<int32_t>(XorShift32(simulation_rng_state) % 5u) - 2;
-
-
-     // Add an occasional small radiation burst to make the simulated space
-     // environment easy to see in the UART log.
-
+    // Add an occasional small radiation burst to make the simulated space
+    // environment easy to see in the UART log.
     if ((XorShift32(simulation_rng_state) & 0x3Fu) == 0u)
     {
         radiation_change += 25;
@@ -134,28 +130,24 @@ void PayloadSim_Tick(void)
     // puts changed data in next data
     next_data.timestamp_ms = current_tick;
     next_data.temperature_c_x10 = static_cast<int16_t>(Clamp(
-        static_cast<int32_t>(next_data.temperature_c_x10)
-            + temperature_change,-400,850));
+        static_cast<int32_t>(next_data.temperature_c_x10) + temperature_change, -400, 850));
 
     next_data.humidity_pct_x10 = static_cast<uint16_t>(Clamp(
-        static_cast<int32_t>(next_data.humidity_pct_x10)
-            + humidity_change,0,1000));
+        static_cast<int32_t>(next_data.humidity_pct_x10) + humidity_change, 0, 1000));
 
     next_data.radiation_cps = static_cast<uint16_t>(Clamp(
-        static_cast<int32_t>(next_data.radiation_cps)+ radiation_change,
-        0,
-        2000));
+        static_cast<int32_t>(next_data.radiation_cps) + radiation_change, 0, 2000));
     next_data.node_id = PAYLOAD_NODE_ID;
     next_data.flags = 0u;
+
     //update CRC and put it inside shared verb
     UpdateCrc(next_data);
     CommitSample(next_data);
 }
 
-
- // Prepares a safe copy of the latest payload data for I2C transmission.
- // This prevents the simulator from changing current_data while I²C is sending it.
- // ISSUE Every 20th read, it intentionally corrupts one bit to test CRC detection.
+// Prepares a safe copy of the latest payload data for I2C transmission.
+// This prevents the simulator from changing current_data while I²C is sending it.
+// ISSUE Every 20th read, it intentionally corrupts one bit to test CRC detection.
 void PayloadSim_PrepareTransmitData(PayloadData_t* output_data)
 {
     if (output_data == nullptr)

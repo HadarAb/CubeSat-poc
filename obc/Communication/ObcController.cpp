@@ -1,3 +1,4 @@
+/* Coordinates UART commands, periodic I2C polling, and cached OBC telemetry. */
 #include "ObcController.hpp"
 
 #include "I2CMaster.hpp"
@@ -28,8 +29,9 @@ uint8_t GetStatus(void)
         return UART_STATUS_NO_DATA;
     }
 
-    if ((last_whoami_status != HAL_OK)|| (last_payload_id != PAYLOAD_NODE_ID)
-    				|| (last_data_status != HAL_OK))
+    if ((last_whoami_status != HAL_OK)
+        || (last_payload_id != PAYLOAD_NODE_ID)
+        || (last_data_status != HAL_OK))
     {
         return UART_STATUS_I2C_ERROR;
     }
@@ -39,15 +41,10 @@ uint8_t GetStatus(void)
         return UART_STATUS_CRC_ERROR;
     }
 
-    if(payload_available != 0u) {
-    	return UART_STATUS_OK;
-    }
-    else {
-    	return UART_STATUS_NO_DATA;
-    }
-
+    return (payload_available != 0u) ? UART_STATUS_OK : UART_STATUS_NO_DATA;
 }
 
+/* Builds the fixed UART payload from the latest cached telemetry and counters. */
 UartPayload_t BuildPayload(void)
 {
     UartPayload_t payload = {};
@@ -76,7 +73,7 @@ void SendError(uint16_t sequence, uint8_t status)
     UartPayload_t payload = {};
     payload.status = status;
 
-    UartProtocol_SendFrame(UART_MSG_ERROR,sequence,&payload,sizeof(payload));
+    UartProtocol_SendFrame(UART_MSG_ERROR, sequence, &payload, sizeof(payload));
 }
 
 /* handle request from ground station */
@@ -89,7 +86,7 @@ void HandleRequest(uint8_t msg_type, uint16_t sequence)
         case UART_MSG_BATTERY:
         {
             const UartPayload_t payload = BuildPayload();
-            UartProtocol_SendFrame(msg_type,sequence,&payload,sizeof(payload));
+            UartProtocol_SendFrame(msg_type, sequence, &payload, sizeof(payload));
             break;
         }
 
@@ -107,7 +104,7 @@ void PollPayload(void)
     PayloadData_t candidate = {};
 
     payload_read_attempted = 1u;
-    last_whoami_status = I2CMaster_ReadWhoAmI(PAYLOAD_I2C_ADDRESS_HAL,&payload_id);
+    last_whoami_status = I2CMaster_ReadWhoAmI(PAYLOAD_I2C_ADDRESS_HAL, &payload_id);
     last_payload_id = payload_id;
 
     if ((last_whoami_status != HAL_OK) || (payload_id != PAYLOAD_NODE_ID))
@@ -118,8 +115,8 @@ void PollPayload(void)
         return;
     }
 
-    last_data_status = I2CMaster_ReadPayloadData(PAYLOAD_I2C_ADDRESS_HAL,&candidate,&crc_valid,
-    												nullptr);
+    last_data_status = I2CMaster_ReadPayloadData(PAYLOAD_I2C_ADDRESS_HAL, &candidate,
+                                                 &crc_valid, nullptr);
     last_crc_valid = crc_valid;
 
     if (last_data_status != HAL_OK)
