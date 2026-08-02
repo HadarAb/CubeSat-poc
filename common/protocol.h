@@ -19,14 +19,8 @@ extern "C" {
 #define REG_DATA    0x10u
 #define REG_SETBATT 0x20u
 
-/*
- * Public 7-bit bus address and the left-shifted value expected by STM32 HAL
- * master/slave APIs.
- */
 // payload id
 #define PAYLOAD_NODE_ID                0x02u
-#define PAYLOAD_I2C_ADDRESS_7BIT       0x02u
-#define PAYLOAD_I2C_ADDRESS_HAL        (PAYLOAD_I2C_ADDRESS_7BIT << 1u)
 
 #define PAYLOAD_FLAG_SEU_INJECTED      0x01u
 

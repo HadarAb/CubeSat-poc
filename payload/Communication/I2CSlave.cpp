@@ -1,6 +1,7 @@
 /* Implements the payload-side I2C register protocol and HAL callbacks. */
 #include "I2CSlave.hpp"
 
+#include "../../common/bus_config.h"
 #include "../../common/protocol.h"
 #include "../Simulation/PayloadSim.hpp"
 
@@ -38,7 +39,7 @@ HAL_StatusTypeDef I2CSlave_Init(I2C_HandleTypeDef* i2c_handle)
     }
 
     //recive slave address
-    slave_i2c->Init.OwnAddress1 = PAYLOAD_I2C_ADDRESS_HAL;
+    slave_i2c->Init.OwnAddress1 = PAYLOAD_I2C_ADDRESS_HAL;  // now resolved from bus_config.h, not protocol.h
 
     if (HAL_I2C_Init(slave_i2c) != HAL_OK)
     {

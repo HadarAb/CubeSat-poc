@@ -3,6 +3,7 @@
 
 #include "I2CMaster.hpp"
 #include "UartProtocol.hpp"
+#include "../../common/bus_config.h"
 #include "../../common/protocol.h"
 #include "../../common/uart_protocol.h"
 
