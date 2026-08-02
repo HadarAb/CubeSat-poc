@@ -1,4 +1,6 @@
 /* Coordinates UART commands, periodic I2C polling, and cached OBC telemetry. */
+
+
 #include "ObcController.hpp"
 
 #include "I2CMaster.hpp"
@@ -30,9 +32,8 @@ uint8_t GetStatus(void)
         return UART_STATUS_NO_DATA;
     }
 
-    if ((last_whoami_status != HAL_OK)
-        || (last_payload_id != PAYLOAD_NODE_ID)
-        || (last_data_status != HAL_OK))
+    if ((last_whoami_status != HAL_OK) || (last_payload_id != PAYLOAD_NODE_ID)
+    				|| (last_data_status != HAL_OK))
     {
         return UART_STATUS_I2C_ERROR;
     }

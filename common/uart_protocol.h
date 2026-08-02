@@ -57,8 +57,7 @@ typedef struct __attribute__((packed))
 } UartPayload_t;
 
 #define UART_FRAME_HEADER_SIZE ((uint16_t)sizeof(UartFrameHeader_t))
-#define UART_MAX_FRAME_SIZE \
-    (UART_FRAME_HEADER_SIZE + UART_MAX_PAYLOAD_SIZE + UART_FRAME_CRC_SIZE)
+#define UART_MAX_FRAME_SIZE (UART_FRAME_HEADER_SIZE + UART_MAX_PAYLOAD_SIZE + UART_FRAME_CRC_SIZE)
 
 #ifdef __cplusplus
 }
