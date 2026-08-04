@@ -2,7 +2,7 @@
 
 #include <stdint.h>
 #include <stdbool.h>
-#include "../../../Common/protocol.h" // PayloadData_t
+#include "../../common/protocol.h" // PayloadData_t
 
 #ifdef __cplusplus
 extern "C" {

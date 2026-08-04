@@ -1,8 +1,10 @@
-# include "PayloadCollector.hpp"
-#include "../../../Common/protocol.h" // PayloadData_t
+#include "PayloadCollector.hpp"
+#include "../../common/protocol.h" // PayloadData_t and PAYLOAD_NODE_ID
+#include "../../common/log_record.h" // LogRecord_t definition
+#include "../../common/bus_config.h" // PAYLOAD_I2C_ADDRESS_HAL
+#include "../../common/crc32.h" // CRC functions
 #include "cmsis_os2.h" // osKernel, osDelay, osMutex
 #include "i2c.h" // hi2c1 and HAL functions of I2C
-#include "../../../Common/crc32.h"
 
 #include <string.h> // memset
 #include <stdint.h>
@@ -31,7 +33,7 @@ struct NodeState {
 // Array of all I2C devices. To add a new sensor later, just add a line here.
 // Keeps track of the hardware address and current health status for each I2C node.
 static NodeState s_nodes[] = {
-    {PAYLOAD_I2C_ADDRESS_HAL, NODE_ID_PAYLOAD, false, 0, 0, 0, 0},
+    {PAYLOAD_I2C_ADDRESS_HAL, PAYLOAD_NODE_ID, false, 0, 0, 0, 0},
     // {EPS_I2C_ADDRESS_HAL, NODE_ID_EPS, false, 0, 0, 0, 0}, // Day 6
 };
 

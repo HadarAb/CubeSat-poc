@@ -11,9 +11,6 @@
 #include "PayloadCollector.hpp"
 
 namespace {
-constexpr uint32_t PayloadPollPeriodMs = 500u;
-
-
 /* Builds the fixed UART payload from the latest thread-safe snapshot. */
 UartPayload_t BuildPayload(void)
 {
@@ -21,7 +18,7 @@ UartPayload_t BuildPayload(void)
 	Snapshot snap;
 
 	// Fetch the latest telemetry snapshot safely
-	bool is_valid = PayloadCollector_GetSnapshot(NODE_ID_PAYLOAD, &snap);
+	bool is_valid = PayloadCollector_GetSnapshot(PAYLOAD_NODE_ID, &snap);
 
 	if (is_valid) {
 		// Populate payload with valid telemetry data
