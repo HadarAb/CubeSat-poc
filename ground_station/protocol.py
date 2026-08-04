@@ -8,6 +8,7 @@ import struct
 import time
 import zlib
 
+RECORD_FMT = '<IIBBBBhHHHB7sI' # struct.calcsize(RECORD_FMT) == 32
 
 FRAME_START = 0xA55A
 MAX_PAYLOAD_SIZE = 64
@@ -17,6 +18,7 @@ HEADER = struct.Struct("<HBHIH")
 PAYLOAD = struct.Struct("<BBBBIhHHBII")
 CRC = struct.Struct("<I")
 START_BYTES = struct.pack("<H", FRAME_START)
+
 
 
 class MessageType(IntEnum):

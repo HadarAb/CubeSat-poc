@@ -26,6 +26,8 @@
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include "ObcController.hpp"
+#include "PayloadCollector.hpp"
+#include "../../../Common/Log_record.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -46,7 +48,7 @@ typedef StaticSemaphore_t osStaticMutexDef_t;
 
 /* Private variables ---------------------------------------------------------*/
 /* USER CODE BEGIN Variables */
-
+osMutexId_t i2c_mtxHandle;
 /* USER CODE END Variables */
 /* Definitions for defaultTask */
 osThreadId_t defaultTaskHandle;
@@ -118,6 +120,13 @@ void MX_FREERTOS_Init(void); /* (MISRA C 2004 rule 8.1) */
 void MX_FREERTOS_Init(void) {
   /* USER CODE BEGIN Init */
 
+	PayloadCollector_Init();
+
+	const osMutexAttr_t i2c_mtx_attributes = {
+	  .name = "i2c_mtx",
+	  .attr_bits = osMutexPrioInherit,
+	};
+
   /* USER CODE END Init */
   /* Create the mutex(es) */
   /* creation of mtx_spi */
@@ -125,6 +134,9 @@ void MX_FREERTOS_Init(void) {
 
   /* USER CODE BEGIN RTOS_MUTEX */
   /* add mutexes, ... */
+
+  i2c_mtxHandle = osMutexNew(&i2c_mtx_attributes);
+
   /* USER CODE END RTOS_MUTEX */
 
   /* USER CODE BEGIN RTOS_SEMAPHORES */
@@ -137,7 +149,7 @@ void MX_FREERTOS_Init(void) {
 
   /* Create the queue(s) */
   /* creation of q_telemetry */
-  q_telemetryHandle = osMessageQueueNew (16, sizeof(uint32_t), &q_telemetry_attributes);
+  q_telemetryHandle = osMessageQueueNew(16, sizeof(LogRecord_t), &q_telemetry_attributes);
 
   /* USER CODE BEGIN RTOS_QUEUES */
   /* add queues, ... */
@@ -198,10 +210,7 @@ void StartTask_PayloadCol(void *argument)
 {
   /* USER CODE BEGIN StartTask_PayloadCol */
   /* Infinite loop */
-  for(;;)
-  {
-    osDelay(1);
-  }
+	payload_collector_run();
   /* USER CODE END StartTask_PayloadCol */
 }
 
