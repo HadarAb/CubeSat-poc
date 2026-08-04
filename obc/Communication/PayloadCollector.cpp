@@ -94,7 +94,7 @@ static void publish(NodeState &n, const PayloadData_t &raw)
 	rec.obc_time_ms = now;
 	rec.node_time_ms = raw.timestamp_ms;
 	rec.node_id = n.node_id;
-	rec.rec_type = 0; // 0 = Telemetry (standard periodic sensor reading)
+	rec.rec_type = LOG_RECORD_TYPE_TELEMETRY; // from common/log_record.h
 	rec.state = 0; // for state machine later
 
 	// telemetry fields copied from raw
