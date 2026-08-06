@@ -1,60 +1,51 @@
 #ifndef CUBESAT_COMMON_PROTOCOL_H
 #define CUBESAT_COMMON_PROTOCOL_H
 
-#include <stddef.h>
 #include <stdint.h>
+
+#include "vtable.h"
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
 /*
- * I2C register-file interface.
- *
- * Read flow:
- *   1. The OBC writes one register number.
- *   2. The OBC reads the fixed-size response for that register.
+ * Logical node IDs. These are a data field the ground station decodes, not bus
+ * addresses. Physical I2C addresses live in bus_config.h and are unrelated.
  */
-#define REG_WHOAMI  0x00u
-#define REG_DATA    0x10u
-#define REG_SETBATT 0x20u
-
-// payload id
-#define PAYLOAD_NODE_ID                0x02u
-
-#define PAYLOAD_FLAG_SEU_INJECTED      0x01u
+#define PAYLOAD_NODE_ID  0x02u
+#define EPS_NODE_ID      0x03u
 
 /*
- * Fixed little-endian payload response.
+ * I2C register file, protocol v2.
  *
- * radiation_cps is a simulated particle detector count rate in counts/second.
- * crc32 covers every byte before the crc32 field.
+ * Read flow is unchanged: the OBC writes one register number, then reads the
+ * fixed-size response for that register. What changed is that the OBC now asks
+ * for one VTable entry at a time instead of one bulk struct, so polling can be
+ * scheduled per sensor.
+ *
+ *   Read one value by key:   write REG_VT_SELECT + key, then read REG_VT_VALUE
+ *   Discover what a node has: read REG_VT_COUNT, then for each index
+ *                             write REG_VT_AT + index, then read REG_VT_ENTRY
  */
-// so the compiler wont add padding
-typedef struct __attribute__((packed))
-{
-    uint32_t timestamp_ms;
-    int16_t temperature_c_x10;
-    uint16_t humidity_pct_x10;
-    uint16_t radiation_cps;
-    uint8_t battery_pct;
-    uint8_t node_id;
-    uint8_t flags;
-    uint32_t crc32;
-} PayloadData_t;
+#define REG_WHOAMI     0x00u  /* read 1 byte, the logical node ID */
+#define REG_VT_COUNT   0x30u  /* read 2 bytes, live VTable entry count */
+#define REG_VT_SELECT  0x31u  /* write VT_NAME_LEN bytes, select by key name */
+#define REG_VT_VALUE   0x32u  /* read VT_VALUE_WIRE_SIZE bytes from the selection */
+#define REG_VT_AT      0x33u  /* write 2 bytes, select by index */
+#define REG_VT_ENTRY   0x34u  /* read VT_ENTRY_WIRE_SIZE bytes from the selection */
 
-// macros to calculate size of crc or data size
-#define PAYLOAD_DATA_CRC_SIZE ((uint32_t)offsetof(PayloadData_t, crc32))
-#define PAYLOAD_DATA_WIRE_SIZE ((uint16_t)sizeof(PayloadData_t))
+/*
+ * Legacy bulk-read registers. Retired by the VTable registers above and served
+ * only by the pre-Phase-4 Payload firmware. Remove once both nodes are migrated.
+ */
+#define REG_DATA       0x10u
+#define REG_SETBATT    0x20u
+
+#define PAYLOAD_FLAG_SEU_INJECTED  0x01u
 
 #ifdef __cplusplus
 }
-
-static_assert(sizeof(PayloadData_t) == 17u,
-              "PayloadData_t wire layout must stay 17 bytes");
-#else
-_Static_assert(sizeof(PayloadData_t) == 17u,
-               "PayloadData_t wire layout must stay 17 bytes");
 #endif
 
 #endif

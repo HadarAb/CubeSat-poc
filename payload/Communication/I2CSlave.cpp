@@ -3,6 +3,7 @@
 
 #include "../../common/bus_config.h"
 #include "../../common/protocol.h"
+#include "../../common/legacy_payload_data.h"
 #include "../Simulation/PayloadSim.hpp"
 
 namespace

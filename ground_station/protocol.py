@@ -96,14 +96,20 @@ def encode_frame(
 def encode_request(
     msg_type: MessageType | int,
     sequence: int,
+    payload: bytes = b"",
     *,
     frame_timestamp_ms: int | None = None,
 ) -> bytes:
-    """Requests contain a header and CRC, with no payload."""
+    """Requests contain a header, an optional payload, and a CRC.
+
+    Commands that take arguments pass them in payload; the OBC checks the
+    length per command.
+    """
 
     return encode_frame(
         msg_type,
         sequence,
+        payload,
         frame_timestamp_ms=frame_timestamp_ms,
     )
 

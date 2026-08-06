@@ -53,22 +53,26 @@ void SendError(uint16_t sequence, uint8_t status)
     UartProtocol_SendFrame(UART_MSG_ERROR, sequence, &payload, sizeof(payload));
 }
 
-/* handle request from ground station */
-void HandleRequest(uint8_t msg_type, uint16_t sequence)
+/*
+ * Handle one request from the ground station. Commands that take arguments read
+ * them from req.payload and must check req.payload_length themselves, replying
+ * UART_STATUS_BAD_REQUEST when it does not match what the command expects.
+ */
+void HandleRequest(const UartRequest_t& req)
 {
-    switch (msg_type)
+    switch (req.msg_type)
     {
         case UART_MSG_STATUS:
         case UART_MSG_PAYLOAD:
         case UART_MSG_BATTERY:
         {
             const UartPayload_t payload = BuildPayload();
-            UartProtocol_SendFrame(msg_type, sequence, &payload, sizeof(payload));
+            UartProtocol_SendFrame(req.msg_type, req.sequence, &payload, sizeof(payload));
             break;
         }
 
         default:
-            SendError(sequence, UART_STATUS_UNKNOWN_MESSAGE);
+            SendError(req.sequence, UART_STATUS_UNKNOWN_MESSAGE);
             break;
     }
 }
@@ -84,11 +88,10 @@ void ObcController_Init(I2C_HandleTypeDef* i2c_handle)
 // handles incoming messages
 void ObcController_Process(void)
 {
-    uint8_t msg_type = 0u;
-    uint16_t sequence = 0u;
+    UartRequest_t request;
 
-    while (UartProtocol_TryReceiveMessage(&msg_type, &sequence) != 0u)
+    while (UartProtocol_TryReceiveRequest(&request) != 0u)
     {
-        HandleRequest(msg_type, sequence);
+        HandleRequest(request);
     }
 }

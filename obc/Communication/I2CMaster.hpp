@@ -2,6 +2,7 @@
 #pragma once
 
 #include "../../common/protocol.h"
+#include "../../common/legacy_payload_data.h"
 #include "stm32l4xx_hal.h"
 
 #ifdef __cplusplus

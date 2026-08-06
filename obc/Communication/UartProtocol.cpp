@@ -63,7 +63,7 @@ void WriteBytes(const uint8_t* bytes_arr, uint16_t size)
  * Find start bytes, collect header ,learn expected payload size ,collect the rest
  * ,read received CRC ,calculate CRC ,compare them ,return the message type and sequence if valid
  * */
-uint8_t ConsumeByte(uint8_t byte, uint8_t* msg_type, uint16_t* sequence)
+uint8_t ConsumeByte(uint8_t byte, UartRequest_t* out)
 {
     // get first 8 and 16 bits to check is it a start of a msg
     const uint8_t start_low = static_cast<uint8_t>(UART_FRAME_START);
@@ -146,17 +146,20 @@ uint8_t ConsumeByte(uint8_t byte, uint8_t* msg_type, uint16_t* sequence)
 
     if (frame_is_valid != 0u)
     {
-        if (header.payload_length == 0u)
+        out->msg_type = header.msg_type;
+        out->sequence = header.sequence;
+        out->payload_length = header.payload_length;
+
+        // the header check above already rejected payload_length > UART_MAX_PAYLOAD_SIZE
+        if (header.payload_length > 0u)
         {
-            *msg_type = header.msg_type;
-            *sequence = header.sequence;
-            ResetFrameParser();
-            return 1u;
+            std::memcpy(out->payload,
+                        &frame_buffer[UART_FRAME_HEADER_SIZE],
+                        header.payload_length);
         }
 
-        UartPayload_t error = {};
-        error.status = UART_STATUS_BAD_REQUEST;
-        UartProtocol_SendFrame(UART_MSG_ERROR, header.sequence, &error, sizeof(error));
+        ResetFrameParser();
+        return 1u;
     }
 
     ResetFrameParser();
@@ -179,9 +182,9 @@ void UartProtocol_Init(void)
 }
 
 /* check if we got a full message already  */
-extern "C" uint8_t UartProtocol_TryReceiveMessage(uint8_t* msg_type, uint16_t* sequence)
+extern "C" uint8_t UartProtocol_TryReceiveRequest(UartRequest_t* out)
 {
-    if ((msg_type == nullptr) || (sequence == nullptr))
+    if (out == nullptr)
     {
         return 0u;
     }
@@ -191,7 +194,7 @@ extern "C" uint8_t UartProtocol_TryReceiveMessage(uint8_t* msg_type, uint16_t* s
         const uint8_t byte = rx_queue[rx_tail];
         rx_tail = static_cast<uint16_t>((rx_tail + 1u) % RxQueueSize);
 
-        if (ConsumeByte(byte, msg_type, sequence) != 0u)
+        if (ConsumeByte(byte, out) != 0u)
         {
             return 1u;
         }
