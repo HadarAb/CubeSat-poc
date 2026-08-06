@@ -25,4 +25,8 @@ Receives and creates UART frames.
 Checks frame start, length and CRC.
 Sends command responses and debug messages.
 
+Phase 4 PC simulators:
+- `python payload_sim.py` drives Payload `TEMP`, `TDOSE`, `SEL`, and `NRESET` values.
+- `python eps_sim.py` drives EPS battery, temperature, and solar-panel values.
+- Both run without hardware in dry-run mode; see `simulators/README.md` for options.
 
