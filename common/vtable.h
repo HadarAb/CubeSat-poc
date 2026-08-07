@@ -25,6 +25,7 @@ extern "C" {
 #define VT_NAME_LEN     8u
 #define VT_VALUE_LEN    8u
 
+// types unsign32 , int32, float32 ....
 typedef enum
 {
     VT_TYPE_U32   = 0u,
@@ -33,10 +34,12 @@ typedef enum
     VT_TYPE_BYTES = 3u
 } VtType_t;
 
-#define VT_FLAG_IN_USE  0x0001u
-#define VT_FLAG_FRESH   0x0002u  /* set on write, cleared once the OBC reads it */
+// each entity in vtable have flag field
+#define VT_FLAG_IN_USE  0x0001u  // if on means this entity is in use
+#define VT_FLAG_FRESH   0x0002u  // if on then data is fresh and OBC still didnt got it
 
-/* In-RAM entry. This is not a wire format, see the two wire structs below. */
+// this format is only how it is saved inside the ram
+// wire format is how u send it threw i2c is below
 typedef struct __attribute__((packed))
 {
     char name[VT_NAME_LEN];      /* NUL-padded, not NUL-terminated */
@@ -44,13 +47,11 @@ typedef struct __attribute__((packed))
     uint8_t len;                 /* 1..VT_VALUE_LEN valid bytes in value */
     uint16_t flags;
     uint8_t value[VT_VALUE_LEN];
-    uint32_t updated_ms;         /* node-local tick of the last write */
+    uint32_t updated_ms;         // last time this field was updated
 } VtEntry_t;
 
-/*
- * I2C response frames. The slave computes crc16 while it transmits, so the CRC
- * is never part of the stored entry and is never produced when data is packed.
- */
+
+//i2c frame when you know the entity name and just need the value
 typedef struct __attribute__((packed))
 {
     uint8_t type;
@@ -59,6 +60,7 @@ typedef struct __attribute__((packed))
     uint16_t crc16;
 } VtValueWire_t;
 
+//i2c frame when OBC needs to discover new entity
 typedef struct __attribute__((packed))
 {
     char name[VT_NAME_LEN];
@@ -74,10 +76,18 @@ typedef struct __attribute__((packed))
 /* Clears the table. Call once before the scheduler starts. */
 void VTable_Init(void);
 
-/* Creates or updates one entry. Returns false when the table is full. */
-bool VTable_Set(const char* name, VtType_t type, const void* value, uint8_t len);
+/*
+ * Creates or updates one entry. updated_ms is supplied by the caller so this
+ * module stays independent of HAL_GetTick() and remains PC-testable pure C.
+ * Returns false for invalid input or when the table is full.
+ */
+bool VTable_Set(const char* name, VtType_t type, const void* value, uint8_t len,
+                uint32_t updated_ms);
 
-/* Copies one entry out by key. Returns false when the key is unknown. */
+/*
+ * Copies one entry out by key and clears VT_FLAG_FRESH in the stored entry.
+ * Returns false when the key is unknown.
+ */
 bool VTable_Get(const char* name, VtEntry_t* out);
 
 /* Number of live entries, and the exclusive upper bound for VTable_At. */
@@ -86,7 +96,7 @@ uint16_t VTable_Count(void);
 /* Copies the entry at a dense index in [0, VTable_Count()). Used for discovery. */
 bool VTable_At(uint16_t index, VtEntry_t* out);
 
-/* FNV-1a over the padded key. This is the sensor_id stored in SD log slots. */
+// input a name return an ID using FNV-1a, it is usefull to store the ID on the SD
 uint16_t VTable_HashName(const char* name);
 
 #ifdef __cplusplus
