@@ -9,9 +9,10 @@ transport.py        = send messages through the COM port
 runtime.py          = keep everything running and interactive / loop
 payload_sim.py      = Payload program you launch 
 eps_sim.py          = EPS program you launch
-test_simulators.py  = prove the code works / just tests 
 README.md           = instructions
 ```
+
+Tests are kept outside the simulator code in `tests/simulators/`.
 
 The Payload and EPS use the same UART envelope (`0xA55A`, header, payload,
 CRC32), but run as separate programs because they model different hardware.
@@ -96,6 +97,5 @@ the complete simulator payload.
 ## Tests
 
 ```powershell
-python -m unittest discover -s simulators -p "test_*.py" -v
-python -m unittest discover -s ground_station -p "test_*.py" -v
+python -m unittest discover -s tests -t . -p "test_*.py" -v
 ```
