@@ -106,6 +106,18 @@ typedef struct __attribute__((packed))
     uint8_t value[VT_VALUE_LEN];
 } UartSimAckPayload_t;
 
+/*
+ * One decoded, CRC-valid UART message. This is an in-memory object used by
+ * both nodes after the shared parser removes the wire header and CRC.
+ */
+typedef struct
+{
+    uint8_t msg_type;
+    uint16_t sequence;
+    uint16_t payload_length;
+    uint8_t payload[UART_MAX_PAYLOAD_SIZE];
+} UartReceivedFrame_t;
+
 #define UART_FRAME_HEADER_SIZE ((uint16_t)sizeof(UartFrameHeader_t))
 #define UART_MAX_FRAME_SIZE (UART_FRAME_HEADER_SIZE + UART_MAX_PAYLOAD_SIZE + UART_FRAME_CRC_SIZE)
 
