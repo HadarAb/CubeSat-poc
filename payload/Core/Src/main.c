@@ -26,7 +26,7 @@
 /* USER CODE BEGIN Includes */
 #include "I2CSlave.hpp"
 #include "PayloadUart.hpp"
-#include "../../common/vtable.h"
+#include "../../common/vtable/vtable.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/

@@ -1,7 +1,7 @@
 /* Public interface for CRC-protected UART frames used by the OBC ground station. */
 #pragma once
 
-#include "../../common/uart_protocol.h"
+#include "../../common/uart/uart_protocol.h"
 
 #ifdef __cplusplus
 extern "C" {

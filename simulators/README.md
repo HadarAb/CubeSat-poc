@@ -83,7 +83,7 @@ hour, so capacity and drain tests do not need to run overnight.
 
 ## Simulator UART payloads
 
-Message IDs and C layouts are frozen in `common/uart_protocol.h`.
+Message IDs and C layouts are frozen in `common/uart/uart_protocol.h`.
 
 - `SIM_SET (0x40)`: `name[8], type, len, value[8]`
 - `SIM_GET (0x41)`: `name[8]`

@@ -7,8 +7,8 @@
 #define __attribute__(ignored)
 #endif
 
-#include "../../common/crc16.h"
-#include "../../common/vtable.h"
+#include "../../common/i2c/crc16.h"
+#include "../../common/vtable/vtable.h"
 
 
 int main(void)

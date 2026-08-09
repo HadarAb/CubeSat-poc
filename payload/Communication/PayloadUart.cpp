@@ -1,9 +1,9 @@
 /* Implements Payload SIM_SET/GET/LIST over the shared framed UART transport. */
 #include "PayloadUart.hpp"
 
-#include "../../common/uart_protocol.h"
-#include "../../common/uart_transport.hpp"
-#include "../../common/vtable.h"
+#include "../../common/uart/uart_protocol.h"
+#include "../../common/uart/uart_transport.hpp"
+#include "../../common/vtable/vtable.h"
 #include "stm32l4xx_hal.h"
 
 #include <cstring>

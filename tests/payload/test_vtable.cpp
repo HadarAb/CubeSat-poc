@@ -10,7 +10,7 @@
 #define __attribute__(ignored)
 #endif
 
-#include "../../payload/Communication/VTable.c"
+#include "../../common/vtable/vtable.c"
 
 
 static void TestCreateUpdateAndGet(void)

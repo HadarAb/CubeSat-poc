@@ -1,7 +1,7 @@
 /* Connects OBC-specific UART functions to the shared framed UART transport. */
 #include "UartProtocol.hpp"
 
-#include "../../common/uart_transport.hpp"
+#include "../../common/uart/uart_transport.hpp"
 
 
 namespace
