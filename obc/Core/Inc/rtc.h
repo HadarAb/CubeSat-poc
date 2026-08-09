@@ -42,6 +42,11 @@ void MX_RTC_Init(void);
 
 /* USER CODE BEGIN Prototypes */
 
+uint32_t RTC_get_boot_count(void);
+uint32_t RTC_get_reset_flags(void);
+void RTC_set_last_epoch(uint32_t epoch);
+uint32_t RTC_get_epoch(void);
+
 /* USER CODE END Prototypes */
 
 #ifdef __cplusplus

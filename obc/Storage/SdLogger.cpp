@@ -16,20 +16,18 @@ extern "C" osMessageQueueId_t q_telemetryHandle;
 namespace
 {
 // max records in buffer and in queue
-constexpr uint32_t RecordsPerSector = 16u;
-
 constexpr uint32_t FlushTimeoutTicks = 2000u;
 constexpr uint32_t RetryDelayTicks = 5000u;
 constexpr uint32_t QueueWaitTicks = 250u;
 
-static_assert((RecordsPerSector * sizeof(LogRecord_t)) == 512u, "One logger batch must occupy exactly one sector");
+static_assert((LOG_RECORDS_PER_SECTOR * sizeof(LogRecord_t)) == LOG_SECTOR_SIZE_BYTES, "One logger batch must occupy exactly one sector");
 
 /* Status values read by GroundComm without giving it access to FatFs. */
 volatile SdLoggerState_t logger_state = SD_LOGGER_INITIALIZING;
 volatile uint32_t logger_error_count = 0u;
 
 /* One-sector RAM buffer filled from q_telemetry before an SD write. */
-LogRecord_t batch[RecordsPerSector] = {};
+LogRecord_t batch[LOG_RECORDS_PER_SECTOR] = {};
 uint32_t batch_count = 0u;
 uint32_t flush_deadline = 0u;
 uint32_t next_retry_tick = 0u;
@@ -98,9 +96,6 @@ bool FlushBatch(uint32_t now)
  * then adds it to RAM/buffer */
 void BufferRecord(LogRecord_t record, uint32_t now)
 {
-    // The collector supplies the current boot's tick. Add the previous boot's final time.
-    record.obc_time_ms += TelemetryFileStore_GetTimeBaseMs();
-
     // Calculate CRC after changing time so the CRC matches the final stored bytes.
     record.crc32 = Protocol_Crc32(reinterpret_cast<const uint8_t*>(&record), LOG_RECORD_CRC_SIZE);
 
@@ -168,8 +163,8 @@ extern "C" void SdLogger_Task(void* argument)
             {
             	//update record
                 BufferRecord(record, now);
-                //if 16 records are present write them to the SD .
-                if (batch_count == RecordsPerSector)
+                //if 16 records are present write them to the SD
+                if (batch_count == LOG_RECORDS_PER_SECTOR)
                 {
                     (void)FlushBatch(now);
                 }

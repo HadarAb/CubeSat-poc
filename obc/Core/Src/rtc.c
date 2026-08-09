@@ -21,7 +21,7 @@
 #include "rtc.h"
 
 /* USER CODE BEGIN 0 */
-
+#include <time.h>
 /* USER CODE END 0 */
 
 RTC_HandleTypeDef hrtc;
@@ -141,6 +141,50 @@ void HAL_RTC_MspDeInit(RTC_HandleTypeDef* rtcHandle)
 }
 
 /* USER CODE BEGIN 1 */
+
+uint32_t RTC_get_boot_count(void)
+{
+	return HAL_RTCEx_BKUPRead(&hrtc, RTC_BKP_DR1);
+}
+
+uint32_t RTC_get_reset_flags(void)
+{
+	return HAL_RTCEx_BKUPRead(&hrtc, RTC_BKP_DR3);
+}
+
+// for DR2, we will use this later when handling the epoch time
+void RTC_set_last_epoch(uint32_t epoch)
+{
+	HAL_RTCEx_BKUPWrite(&hrtc, RTC_BKP_DR2, epoch);
+}
+
+uint32_t RTC_get_epoch(void)
+{
+	RTC_TimeTypeDef sTime = {0};
+	RTC_DateTypeDef sDate = {0};
+
+	// HAL Requirement: MUST call GetTime and then GetDate to unlock the values
+	HAL_RTC_GetTime(&hrtc, &sTime, RTC_FORMAT_BIN);
+	HAL_RTC_GetDate(&hrtc, &sDate, RTC_FORMAT_BIN);
+
+	// Convert HAL time structure to standard C time structure
+	struct tm timeinfo = {0};
+
+	// HAL Date.Year is 0-99 (representing 2000-2099).
+	// struct tm expects years since 1900. So 2000 - 1900 = 100.
+	timeinfo.tm_year = sDate.Year + 100;
+
+	// HAL Date.Month is 1-12. struct tm expects 0-11.
+	timeinfo.tm_mon  = sDate.Month - 1;
+
+	timeinfo.tm_mday = sDate.Date;
+	timeinfo.tm_hour = sTime.Hours;
+	timeinfo.tm_min  = sTime.Minutes;
+	timeinfo.tm_sec  = sTime.Seconds;
+
+	// Convert to Unix Epoch (seconds since Jan 1, 1970)
+	return (uint32_t)mktime(&timeinfo);
+}
 
 /* USER CODE END 1 */
 

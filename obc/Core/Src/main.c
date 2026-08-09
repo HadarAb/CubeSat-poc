@@ -76,6 +76,9 @@ int main(void)
 
   /* USER CODE BEGIN 1 */
 
+	// save hardware reset flags (RCC->CSR) to know why the board rebooted, before clearing them
+	uint32_t reset_flags_snapshot = RCC->CSR;
+
   /* USER CODE END 1 */
 
   /* MCU Configuration--------------------------------------------------------*/
@@ -102,8 +105,18 @@ int main(void)
   MX_RTC_Init();
   MX_SPI1_Init();
   /* USER CODE BEGIN 2 */
+
+  // save the reset flags to DR3(Data Register) and clear them from hardware
+  HAL_RTCEx_BKUPWrite(&hrtc, RTC_BKP_DR3, reset_flags_snapshot);
+  __HAL_RCC_CLEAR_RESET_FLAGS();
+
+  // increment the boot counter in DR1
+  uint32_t current_boot_count = HAL_RTCEx_BKUPRead(&hrtc, RTC_BKP_DR1);
+  HAL_RTCEx_BKUPWrite(&hrtc, RTC_BKP_DR1, current_boot_count + 1);
+
   ObcController_Init(&hi2c1);
   SdCard_RunStartupTest();
+
   /* USER CODE END 2 */
 
   /* Init scheduler */

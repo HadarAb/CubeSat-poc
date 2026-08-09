@@ -8,12 +8,16 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <cstdio> // std::snprintf
 
 namespace
 {
 constexpr uint32_t SessionMagic = 0x53534553u; /* "SESS" in little endian. */
 constexpr uint16_t SessionVersion = 1u;
-constexpr char SessionFilename[] = "SESSION.BIN";
+/*
+ * Filenames are now generated dynamically per volume (e.g., "0:/SESSION.BIN").
+ */
+//constexpr char SessionFilename[] = "SESSION.BIN";
 
 /* Exact 32-byte format of one metadata copy inside SESSION.BIN. */
 typedef struct __attribute__((packed))
@@ -67,37 +71,42 @@ void CopySlotToMetadata(const SessionSlot_t& slot, SessionMetadata_t* metadata)
 }
 }
 
-/* Loads the newest valid SESSION.BIN slot. A missing file is not an error. */
-bool SessionStore_Load(SessionMetadata_t* metadata, bool* valid)
+/* Loads the newest valid SESSION.BIN slot for a specific volume. A missing file is not an error. */
+bool SessionStore_Load(const char* vol_path, SessionMetadata_t* metadata, bool* valid)
 {
-    if ((metadata == nullptr) || (valid == nullptr))
-    {
-        return false;
-    }
+	if ((vol_path == nullptr) || (metadata == nullptr) || (valid == nullptr)) {
+		return false;
+	}
 
     *metadata = {};
     *valid = false;
 
-    FIL file = {};
-    FRESULT result = f_open(&file, SessionFilename, FA_READ);
-    if (result == FR_NO_FILE)
-    {
+	/*
+	 * Dynamically build the filename using the provided volume path.
+	 * For example, if vol_path is "0:/", filename becomes "0:/SESSION.BIN".
+	 */
+	char filename[16] = {};
+	std::snprintf(filename, sizeof(filename), "%sSESSION.BIN", vol_path);
+
+	FIL file = {};
+	// Open the dynamically named file
+	FRESULT result = f_open(&file, filename, FA_READ);
+
+    if (result == FR_NO_FILE) {
         return true;
     }
-    if (result != FR_OK)
-    {
+
+    if (result != FR_OK) {
         return false;
     }
 
     // SESSION.BIN has two copies. A reset may damage one while leaving the other valid.
     SessionSlot_t slots[2] = {};
     bool slot_valid[2] = {false, false};
-    for (uint32_t slot_index = 0u; slot_index < 2u; ++slot_index)
-    {
+    for (uint32_t slot_index = 0u; slot_index < 2u; ++slot_index) {
         UINT bytes_read = 0u;
         result = f_read(&file, &slots[slot_index], sizeof(SessionSlot_t), &bytes_read);
-        if (result != FR_OK)
-        {
+        if (result != FR_OK) {
             break;
         }
 
@@ -105,31 +114,23 @@ bool SessionStore_Load(SessionMetadata_t* metadata, bool* valid)
     }
 
     const FRESULT close_result = f_close(&file);
-    if ((result != FR_OK) || (close_result != FR_OK))
-    {
+    if ((result != FR_OK) || (close_result != FR_OK)) {
         return false;
     }
 
     // If both copies are valid, select the one with the newest generation number.
     if (slot_valid[0] && slot_valid[1])
     {
-        if (GenerationIsNewer(slots[1].generation, slots[0].generation))
-        {
+        if (GenerationIsNewer(slots[1].generation, slots[0].generation)) {
             CopySlotToMetadata(slots[1], metadata);
-        }
-        else
-        {
+        } else {
             CopySlotToMetadata(slots[0], metadata);
         }
         *valid = true;
-    }
-    else if (slot_valid[0])
-    {
+    } else if (slot_valid[0]) {
         CopySlotToMetadata(slots[0], metadata);
         *valid = true;
-    }
-    else if (slot_valid[1])
-    {
+    } else if (slot_valid[1]) {
         CopySlotToMetadata(slots[1], metadata);
         *valid = true;
     }
@@ -137,13 +138,12 @@ bool SessionStore_Load(SessionMetadata_t* metadata, bool* valid)
     return true;
 }
 
-/* Writes the metadata to the older of the two SESSION.BIN slots. */
-bool SessionStore_Save(SessionMetadata_t* metadata)
+/* Writes the metadata to the older slot of the specified volume's SESSION.BIN. */
+bool SessionStore_Save(const char* vol_path, SessionMetadata_t* metadata)
 {
-    if (metadata == nullptr)
-    {
-        return false;
-    }
+	if ((vol_path == nullptr) || (metadata == nullptr)) {
+		return false;
+	}
 
     SessionSlot_t next = {};
     next.magic = SessionMagic;
@@ -156,12 +156,20 @@ bool SessionStore_Save(SessionMetadata_t* metadata)
     next.last_committed_time_ms = metadata->last_committed_time_ms;
     next.crc32 = Protocol_Crc32(reinterpret_cast<const uint8_t*>(&next), static_cast<uint32_t>(offsetof(SessionSlot_t, crc32)));
 
-    FIL file = {};
-    FRESULT result = f_open(&file, SessionFilename, FA_OPEN_ALWAYS | FA_READ | FA_WRITE);
-    if (result != FR_OK)
-    {
-        return false;
-    }
+	/*
+	 * Build the target path dynamically based on the volume context.
+	 * Prevents Payload (0:/) and EPS (1:/) from overwriting each other's metadata.
+	 */
+	char filename[16] = {};
+	std::snprintf(filename, sizeof(filename), "%sSESSION.BIN", vol_path);
+
+	FIL file = {};
+	// Using the dynamically created filename
+	FRESULT result = f_open(&file, filename, FA_OPEN_ALWAYS | FA_READ | FA_WRITE);
+
+	if (result != FR_OK) {
+		return false;
+	}
 
     // Even generations use slot 0 and odd generations use slot 1.
     //in simple words , witch slot to write 0 or 1

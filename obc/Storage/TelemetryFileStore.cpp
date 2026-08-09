@@ -5,72 +5,104 @@
 #include "fatfs.h"
 
 #include "../../common/crc32.h"
+#include "../../common/log_record.h"
 
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
 
+/*
+ * FatFs Multi-Partition Map:
+ * FatFs requires this array when _MULTI_PARTITION is enabled.
+ * It maps logical volumes ("0:", "1:") to physical drives and partitions.
+ */
+extern "C" {
+	PARTITION VolToPart[2] = {
+			{0, 1}, /* Logical drive "0:" -> Payload */
+			{0, 2}  /* Logical drive "1:" -> EPS */
+	};
+}
+
 namespace
 {
-constexpr uint32_t SectorSizeBytes = 512u;
-constexpr uint32_t RecordsPerSector = 16u;
 constexpr uint32_t TelemetryFileSizeBytes = 1024u * 1024u;
 constexpr uint32_t MinimumFreeBytes = 2u * 1024u * 1024u;
 constexpr uint32_t SpaceRequiredForNewFile = TelemetryFileSizeBytes + MinimumFreeBytes;
 constexpr uint32_t MaximumFileIndex = 9999u;
 
-static_assert((RecordsPerSector * sizeof(LogRecord_t)) == SectorSizeBytes, "One logger batch must occupy exactly one sector");
+/*
+ * Context structure for a single FatFs volume.
+ * Bundles all state variables required to manage files on a specific partition.
+ * This allows us to manage multiple drives without duplicating code.
+ */
+struct VolumeCtx_t {
+	const char* volume_path;      /* Mount path, e.g., "0:/" or "1:/" */
+	FATFS filesystem;             /* FatFs workspace for this specific volume */
+	FIL active_file;              /* The currently open file object */
+	bool file_is_open;            /* True if active_file is open and ready to write */
+	bool session_initialized;     /* True if we have loaded metadata from SESSION.BIN */
+	uint32_t current_file_index;  /* The index (XXXX) of the currently open TLMXXXX.BIN */
+	uint32_t current_file_bytes;  /* How many bytes are currently written to active_file */
+	SessionMetadata_t session;    /* Metadata for this specific volume */
+};
 
-FIL telemetry_file = {};
-bool telemetry_file_open = false;
-bool session_initialized = false;
-uint32_t current_file_index = 0u;
-uint32_t current_file_bytes = 0u;
-uint32_t time_base_ms = 0u;
-SessionMetadata_t session = {};
+/* Instantiate two independent volume contexts for Payload and EPS. */
+VolumeCtx_t vol_payload = { "0:/", {}, {}, false, false, 0u, 0u, {} };
+VolumeCtx_t vol_eps     = { "1:/", {}, {}, false, false, 0u, 0u, {} };
 
 /* Accepts only the exact 8.3 filename TLM0001.BIN through TLM9999.BIN. */
 bool IsTelemetryFilename(const char* name, uint32_t* index)
 {
-    if ((name == nullptr) || (std::strlen(name) != 11u) || (name[0] != 'T') || (name[1] != 'L') || (name[2] != 'M') || (name[7] != '.') || (name[8] != 'B') || (name[9] != 'I') || (name[10] != 'N'))
-    {
+    if ((name == nullptr)
+    		|| (std::strlen(name) != 11u)
+			|| (name[0] != 'T')
+			|| (name[1] != 'L')
+			|| (name[2] != 'M')
+			|| (name[7] != '.')
+			|| (name[8] != 'B')
+			|| (name[9] != 'I')
+			|| (name[10] != 'N')) {
         return false;
     }
 
     // Convert the four filename digits to an integer without sscanf().
     uint32_t parsed = 0u;
-    for (uint32_t offset = 3u; offset <= 6u; ++offset)
-    {
-        if ((name[offset] < '0') || (name[offset] > '9'))
-        {
+    for (uint32_t offset = 3u; offset <= 6u; ++offset) {
+        if ((name[offset] < '0') || (name[offset] > '9')) {
             return false;
         }
+
         parsed = (parsed * 10u) + static_cast<uint32_t>(name[offset] - '0');
     }
 
-    if (parsed == 0u)
-    {
+    if (parsed == 0u) {
         return false;
     }
 
-    if (index != nullptr)
-    {
+    if (index != nullptr) {
         *index = parsed;
     }
+
     return true;
 }
 
-/* Builds an 8.3 telemetry filename from its numeric index. */
-void MakeTelemetryFilename(uint32_t index, char* filename, size_t size)
+/*
+ * Builds a telemetry filename WITH the volume path prefix.
+ * e.g., If ctx->volume_path is "0:/", it formats as "0:/TLM0001.BIN".
+ * Note: size must be at least 16 to accommodate the path prefix.
+ */
+void MakeTelemetryFilename(VolumeCtx_t* ctx, uint32_t index, char* filename, size_t size)
 {
-    std::snprintf(filename, size, "TLM%04lu.BIN", static_cast<unsigned long>(index));
+    std::snprintf(filename, size, "%sTLM%04lu.BIN", ctx->volume_path, static_cast<unsigned long>(index));
 }
 
-/* Finds the oldest and newest telemetry file indexes on the mounted card. */
-bool ScanFileIndexes(uint32_t* lowest_index, uint32_t* highest_index)
+/*
+ * Finds the oldest and newest telemetry file indexes on a SPECIFIC volume.
+ * Requires the context pointer to know which partition to scan.
+ */
+bool ScanFileIndexes(VolumeCtx_t* ctx, uint32_t* lowest_index, uint32_t* highest_index)
 {
-    if ((lowest_index == nullptr) || (highest_index == nullptr))
-    {
+    if ((lowest_index == nullptr) || (highest_index == nullptr)) {
         return false;
     }
 
@@ -79,32 +111,29 @@ bool ScanFileIndexes(uint32_t* lowest_index, uint32_t* highest_index)
 
     DIR directory = {};
     FILINFO info = {};
-    FRESULT result = f_opendir(&directory, USERPath);
-    if (result != FR_OK)
-    {
+
+	// Open the directory of the specific volume (Payload or EPS)
+	FRESULT result = f_opendir(&directory, ctx->volume_path);
+    if (result != FR_OK) {
         return false;
     }
 
-    for (;;)
-    {
+    for (;;) {
         result = f_readdir(&directory, &info);
-        if ((result != FR_OK) || (info.fname[0] == '\0'))
-        {
+        if ((result != FR_OK) || (info.fname[0] == '\0')) {
             break;
         }
 
         uint32_t index = 0u;
-        if (!IsTelemetryFilename(info.fname, &index))
-        {
+        if (!IsTelemetryFilename(info.fname, &index)) {
             continue;
         }
 
-        if ((*lowest_index == 0u) || (index < *lowest_index))
-        {
+        if ((*lowest_index == 0u) || (index < *lowest_index)) {
             *lowest_index = index;
         }
-        if (index > *highest_index)
-        {
+
+        if (index > *highest_index) {
             *highest_index = index;
         }
     }
@@ -113,345 +142,369 @@ bool ScanFileIndexes(uint32_t* lowest_index, uint32_t* highest_index)
     return (result == FR_OK) && (close_result == FR_OK);
 }
 
-/* Checks a telemetry record before its timestamp is used for reboot recovery. */
-bool RecordCrcIsValid(const LogRecord_t& record)
+/*
+ * Converts FatFs free clusters on a SPECIFIC volume to a byte count.
+ * Prevents one full partition from reporting the other as full.
+ */
+bool GetFreeBytes(VolumeCtx_t* ctx, uint64_t* free_bytes)
 {
-    const uint32_t expected_crc = Protocol_Crc32(reinterpret_cast<const uint8_t*>(&record), LOG_RECORD_CRC_SIZE);
-    return expected_crc == record.crc32;
-}
-
-/* Reads backwards through the final sector to find the newest complete record. */
-bool ReadLastValidTimestamp(uint32_t file_index, uint32_t* timestamp, bool* found)
-{
-    if ((timestamp == nullptr) || (found == nullptr))
-    {
-        return false;
-    }
-
-    *found = false;
-    char filename[13] = {};
-    MakeTelemetryFilename(file_index, filename, sizeof(filename));
-
-    FIL file = {};
-    FRESULT result = f_open(&file, filename, FA_READ);
-    if (result != FR_OK)
-    {
-        return false;
-    }
-
-    const uint32_t record_count = static_cast<uint32_t>(f_size(&file) / sizeof(LogRecord_t));
-    uint32_t attempts = record_count;
-    if (attempts > RecordsPerSector)
-    {
-        attempts = RecordsPerSector;
-    }
-
-    for (uint32_t attempt = 0u; attempt < attempts; ++attempt)
-    {
-        // Attempt 0 reads the last record, attempt 1 the record before it, etc.
-        const uint32_t record_index = record_count - 1u - attempt;
-        const FSIZE_t offset = static_cast<FSIZE_t>(record_index) * sizeof(LogRecord_t);
-        result = f_lseek(&file, offset);
-        if (result != FR_OK)
-        {
-            break;
-        }
-
-        LogRecord_t record = {};
-        UINT bytes_read = 0u;
-        result = f_read(&file, &record, sizeof(record), &bytes_read);
-        if (result != FR_OK)
-        {
-            break;
-        }
-
-        if ((bytes_read == sizeof(record)) && RecordCrcIsValid(record))
-        {
-            *timestamp = record.obc_time_ms;
-            *found = true;
-            break;
-        }
-    }
-
-    const FRESULT close_result = f_close(&file);
-    return (result == FR_OK) && (close_result == FR_OK);
-}
-
-/* Converts FatFs free clusters to a byte count. */
-bool GetFreeBytes(uint64_t* free_bytes)
-{
-    if (free_bytes == nullptr)
-    {
+    if (free_bytes == nullptr) {
         return false;
     }
 
     DWORD free_clusters = 0u;
     FATFS* filesystem = nullptr;
-    if (f_getfree(USERPath, &free_clusters, &filesystem) != FR_OK)
-    {
-        return false;
-    }
+
+	// Check free space exclusively on the requested volume
+	if (f_getfree(ctx->volume_path, &free_clusters, &filesystem) != FR_OK) {
+		return false;
+	}
 
     // FatFs reports clusters, so convert clusters to sectors and then bytes.
-    *free_bytes = static_cast<uint64_t>(free_clusters) * static_cast<uint64_t>(filesystem->csize) * static_cast<uint64_t>(SectorSizeBytes);
+	*free_bytes = static_cast<uint64_t>(free_clusters)
+				* static_cast<uint64_t>(filesystem->csize)
+				* static_cast<uint64_t>(LOG_SECTOR_SIZE_BYTES);
     return true;
 }
 
-/* Deletes oldest closed telemetry files until a new 1 MiB file can be created safely. */
-bool EnsureSpaceForNewFile(void)
+/*
+ * Deletes the oldest closed telemetry files on THIS volume until space is freed.
+ * Operates strictly within the isolated partition context.
+ */
+bool EnsureSpaceForNewFile(VolumeCtx_t* ctx)
 {
-    for (;;)
-    {
+    for (;;) {
         uint64_t free_bytes = 0u;
-        if (!GetFreeBytes(&free_bytes))
-        {
+        if (!GetFreeBytes(ctx, &free_bytes)) {
             return false;
         }
-        if (free_bytes >= SpaceRequiredForNewFile)
-        {
+        if (free_bytes >= SpaceRequiredForNewFile) {
             return true;
         }
 
         uint32_t lowest_index = 0u;
         uint32_t highest_index = 0u;
-        if (!ScanFileIndexes(&lowest_index, &highest_index))
-        {
+        if (!ScanFileIndexes(ctx, &lowest_index, &highest_index)) {
             return false;
         }
         (void)highest_index;
 
-        // Never delete the file that is currently open for writing.
-        if ((lowest_index == 0u) || (lowest_index == current_file_index))
-        {
+        // Never delete the file that is currently open for writing on THIS context.
+        if ((lowest_index == 0u) || (lowest_index == ctx->current_file_index)) {
             return false;
         }
 
-        char filename[13] = {};
-        MakeTelemetryFilename(lowest_index, filename, sizeof(filename));
-        if (f_unlink(filename) != FR_OK)
-        {
+        // Increased array size to 16 (was 13) to fit prefix like "0:/TLM0001.BIN"
+        char filename[16] = {};
+        MakeTelemetryFilename(ctx, lowest_index, filename, sizeof(filename));
+        if (f_unlink(filename) != FR_OK) {
             return false;
         }
     }
 }
 
-/* Loads saved metadata and reconstructs anything newer from telemetry files. */
-bool InitializeSession(void)
+/*
+ * Loads saved metadata from the volume's unique SESSION.BIN to determine next index.
+ */
+bool InitializeSession(VolumeCtx_t* ctx)
 {
     SessionMetadata_t loaded = {};
     bool loaded_valid = false;
-    if (!SessionStore_Load(&loaded, &loaded_valid))
-    {
-        return false;
-    }
+
+    // Pass the volume path so SessionStore knows which file to load
+	if (!SessionStore_Load(ctx->volume_path, &loaded, &loaded_valid)) {
+		return false;
+	}
 
     uint32_t lowest_index = 0u;
     uint32_t highest_index = 0u;
-    if (!ScanFileIndexes(&lowest_index, &highest_index))
-    {
+    if (!ScanFileIndexes(ctx, &lowest_index, &highest_index)) {
         return false;
     }
     (void)lowest_index;
 
-    uint32_t recovered_time = 0u;
-    if (loaded_valid)
-    {
-        recovered_time = loaded.last_committed_time_ms;
-    }
+	// Apply metadata to this specific volume's context
+	if (loaded_valid) {
+		ctx->session = loaded;
+		ctx->session.session_id = loaded.session_id + 1u;
+	} else {
+		ctx->session = {};
+		ctx->session.session_id = 1u;
+	}
 
-    if (highest_index != 0u)
-    {
-        uint32_t file_time = 0u;
-        bool file_time_valid = false;
-        if (!ReadLastValidTimestamp(highest_index, &file_time, &file_time_valid))
-        {
-            return false;
-        }
-        if (file_time_valid && (file_time > recovered_time))
-        {
-            recovered_time = file_time;
-        }
-    }
-
-    if (loaded_valid)
-    {
-        session = loaded;
-        session.session_id = loaded.session_id + 1u;
-    }
-    else
-    {
-        session = {};
-        session.session_id = 1u;
-    }
-
-    session.active_file_index = 0u;
-    session.last_committed_time_ms = recovered_time;
+	ctx->session.active_file_index = 0u;
 
     uint32_t scanned_next = 1u;
-    if (highest_index != 0u)
-    {
+    if (highest_index != 0u) {
         scanned_next = highest_index + 1u;
     }
-    if (!loaded_valid || (session.next_file_index < scanned_next))
-    {
-        session.next_file_index = scanned_next;
-    }
-    if (session.next_file_index == 0u)
-    {
-        session.next_file_index = 1u;
-    }
 
-    // New stored time equals this recovered base plus the current boot's tick.
-    time_base_ms = recovered_time;
-    session_initialized = true;
+    if (!loaded_valid || (ctx->session.next_file_index < scanned_next)) {
+    	ctx->session.next_file_index = scanned_next;
+	}
+
+    if (ctx->session.next_file_index == 0u) {
+    	ctx->session.next_file_index = 1u;
+	}
+
+	ctx->session_initialized = true;
     return true;
 }
 
-/* Re-scans file indexes after card reinsertion to prevent overwriting a file. */
-bool RefreshNextFileIndex(void)
+/*
+ * Re-scans file indexes on this specific volume.
+ */
+bool RefreshNextFileIndex(VolumeCtx_t* ctx)
 {
     uint32_t lowest_index = 0u;
     uint32_t highest_index = 0u;
-    if (!ScanFileIndexes(&lowest_index, &highest_index))
-    {
+    if (!ScanFileIndexes(ctx, &lowest_index, &highest_index)) {
         return false;
     }
+
     (void)lowest_index;
 
-    if ((highest_index != 0u) && (session.next_file_index <= highest_index))
-    {
-        session.next_file_index = highest_index + 1u;
+    if ((highest_index != 0u) && (ctx->session.next_file_index <= highest_index)) {
+    	ctx->session.next_file_index = highest_index + 1u;
     }
+
     return true;
 }
 
-/* Closes the previous file if needed and creates the next numbered telemetry file. */
-bool OpenNewTelemetryFile(void)
+/*
+ * Closes the previous file on this volume and creates the next one.
+ */
+bool OpenNewTelemetryFile(VolumeCtx_t* ctx)
 {
-    if (telemetry_file_open)
-    {
-        const FRESULT close_result = f_close(&telemetry_file);
-        telemetry_file_open = false;
-        current_file_index = 0u;
-        current_file_bytes = 0u;
-        if (close_result != FR_OK)
-        {
-            return false;
-        }
-    }
+	if (ctx->file_is_open) {
+		const FRESULT close_result = f_close(&ctx->active_file);
+		ctx->file_is_open = false;
+		ctx->current_file_index = 0u;
+		ctx->current_file_bytes = 0u;
+		if (close_result != FR_OK) {
+			return false;
+		}
+	}
 
-    if (!EnsureSpaceForNewFile() || !RefreshNextFileIndex())
-    {
-        return false;
-    }
-    if ((session.next_file_index == 0u) || (session.next_file_index > MaximumFileIndex))
-    {
-        return false;
-    }
+	if (!EnsureSpaceForNewFile(ctx) || !RefreshNextFileIndex(ctx)) {
+		return false;
+	}
+	if ((ctx->session.next_file_index == 0u) || (ctx->session.next_file_index > MaximumFileIndex)) {
+		return false;
+	}
 
-    const uint32_t new_index = session.next_file_index;
-    char filename[13] = {};
-    MakeTelemetryFilename(new_index, filename, sizeof(filename));
-    if (f_open(&telemetry_file, filename, FA_CREATE_NEW | FA_WRITE) != FR_OK)
-    {
-        return false;
-    }
+	const uint32_t new_index = ctx->session.next_file_index;
 
-    telemetry_file_open = true;
-    current_file_index = new_index;
-    current_file_bytes = 0u;
-    session.active_file_index = new_index;
-    session.next_file_index = new_index + 1u;
+	// Buffer size 16 to fit volume prefix
+	char filename[16] = {};
+	MakeTelemetryFilename(ctx, new_index, filename, sizeof(filename));
 
-    // Save the selected filename immediately so a reboot cannot reuse it.
-    if (!SessionStore_Save(&session))
-    {
-        (void)f_close(&telemetry_file);
-        telemetry_file_open = false;
-        current_file_index = 0u;
-        current_file_bytes = 0u;
-        return false;
-    }
+	if (f_open(&ctx->active_file, filename, FA_CREATE_NEW | FA_WRITE) != FR_OK) {
+		return false;
+	}
+
+	ctx->file_is_open = true;
+	ctx->current_file_index = new_index;
+	ctx->current_file_bytes = 0u;
+	ctx->session.active_file_index = new_index;
+	ctx->session.next_file_index = new_index + 1u;
+
+	// Save the metadata to this specific volume's SESSION.BIN
+	if (!SessionStore_Save(ctx->volume_path, &ctx->session)) {
+		(void)f_close(&ctx->active_file);
+		ctx->file_is_open = false;
+		ctx->current_file_index = 0u;
+		ctx->current_file_bytes = 0u;
+		return false;
+	}
+
     return true;
 }
 }
 
-/* Mounts storage, recovers session state, and creates a new telemetry file. */
+/*
+ * Internal helper: mounts a single FatFs partition, loads its independent
+ * metadata, and opens its current telemetry file.
+ */
+static bool ConnectVolume(VolumeCtx_t* ctx)
+{
+	if (f_mount(&ctx->filesystem, ctx->volume_path, 1u) != FR_OK) {
+		return false;
+	}
+
+	if (ctx->session_initialized) {
+		if (!RefreshNextFileIndex(ctx)) {
+			return false;
+		}
+	} else if (!InitializeSession(ctx)) {
+		return false;
+	}
+
+	return OpenNewTelemetryFile(ctx);
+}
+
+/*
+ * Internal helper: safely closes open files and unmounts a single partition.
+ */
+static void DisconnectVolume(VolumeCtx_t* ctx)
+{
+	if (ctx->file_is_open) {
+		(void)f_close(&ctx->active_file);
+	}
+
+	ctx->file_is_open = false;
+	ctx->current_file_index = 0u;
+	ctx->current_file_bytes = 0u;
+
+	// Passing nullptr unmounts the volume in FatFs
+	(void)f_mount(nullptr, ctx->volume_path, 0u);
+}
+
+/*
+ * Mounts both the Payload (0:/) and EPS (1:/) logical volumes.
+ * Returns true only if both partitions successfully mount and prepare files.
+ */
 bool TelemetryFileStore_Connect(void)
 {
-    if (f_mount(&USERFatFS, USERPath, 1u) != FR_OK)
-    {
-        return false;
-    }
+	bool payload_ok = ConnectVolume(&vol_payload);
+	bool eps_ok = ConnectVolume(&vol_eps);
 
-    if (session_initialized)
-    {
-        if (!RefreshNextFileIndex())
-        {
-            return false;
-        }
-    }
-    else if (!InitializeSession())
-    {
-        return false;
-    }
-
-    return OpenNewTelemetryFile();
+	return (payload_ok && eps_ok);
 }
 
-/* Closes the current telemetry file and unmounts storage after an error. */
+/*
+ * Tears down both volumes completely (called on error).
+ */
 void TelemetryFileStore_Disconnect(void)
 {
-    if (telemetry_file_open)
-    {
-        (void)f_close(&telemetry_file);
-    }
-
-    telemetry_file_open = false;
-    current_file_index = 0u;
-    current_file_bytes = 0u;
-    (void)f_mount(nullptr, USERPath, 0u);
+	DisconnectVolume(&vol_payload);
+	DisconnectVolume(&vol_eps);
 }
 
-/* Returns the previous boot's final time, which is added to the current tick. */
-uint32_t TelemetryFileStore_GetTimeBaseMs(void)
+/*
+ * Routing table structure maps a logical Node ID to its physical volume context.
+ */
+struct RouteEntry_t {
+    uint8_t node_id;
+    VolumeCtx_t* target_volume;
+};
+
+/*
+ * Open-Closed Compliant Routing Table:
+ * To add new subsystem nodes in the future, simply add a new row here.
+ * The routing logic itself is closed for modification.
+ */
+static const RouteEntry_t RoutingTable[] = {
+    { 0x02u, &vol_payload }, /* PAYLOAD_NODE_ID */
+    { 0x03u, &vol_eps }      /* EPS_NODE_ID */
+};
+
+/*
+ * Internal helper: Resolves the target volume context based on the sensor_id.
+ * Extracts the Node ID from the high byte of the 16-bit sensor_id (defined in log_record.h).
+ * Returns nullptr if the node is unknown.
+ */
+static VolumeCtx_t* RouteRecord(uint16_t sensor_id)
 {
-    return time_base_ms;
+    // Extract the Node ID (top 8 bits) from the sensor_id
+    const uint8_t node_id = static_cast<uint8_t>(sensor_id >> 8u);
+    const size_t table_size = sizeof(RoutingTable) / sizeof(RoutingTable[0]);
+
+    for (size_t i = 0u; i < table_size; ++i) {
+        if (RoutingTable[i].node_id == node_id) {
+            return RoutingTable[i].target_volume;
+        }
+    }
+    // Unknown source, discard securely
+    return nullptr;
 }
 
-/* Writes and syncs one batch, rotating first when the 1 MiB limit requires it. */
+/*
+ * Gain access to the UART handler defined by CubeMX in usart.c
+ * used for debug warnings when routing fails.
+ */
+extern UART_HandleTypeDef huart2;
+
+/*
+ * Writes a mixed batch of records to the SD card.
+ * Routes each record to its appropriate volume based on its source node.
+ * Rotates files automatically when the 1 MiB limit is reached.
+ */
 bool TelemetryFileStore_Write(const LogRecord_t* records, uint32_t record_count)
 {
-    if ((records == nullptr) || (record_count == 0u) || (record_count > RecordsPerSector) || !telemetry_file_open)
-    {
+    // 1. Safety checks: null pointer, empty batch, or batch too large
+    if ((records == nullptr) || (record_count == 0u) || (record_count > LOG_RECORDS_PER_SECTOR)) {
         return false;
     }
 
-    const uint32_t bytes_to_write = record_count * static_cast<uint32_t>(sizeof(LogRecord_t));
-    if ((current_file_bytes + bytes_to_write) > TelemetryFileSizeBytes)
-    {
-        if (!OpenNewTelemetryFile())
-        {
-            return false;
+    bool eps_written = false;
+    bool payload_written = false;
+    bool overall_success = true;
+
+    // 2. Process the mixed batch record by record
+    for (uint32_t i = 0u; i < record_count; ++i) {
+
+        // RouteRecord examines the top 8 bits to resolve the target volume (Payload or EPS)
+        VolumeCtx_t* ctx = RouteRecord(records[i].sensor_id);
+
+        // 3. Handle unknown sources: Alert via UART and skip the record
+        if (ctx == nullptr) {
+            char warn_msg[64] = {};
+            // Format the warning string into the RAM buffer
+            int len = std::snprintf(warn_msg, sizeof(warn_msg),
+                                    "SD Router Warn: Unknown record! sensor_id: 0x%04X\r\n",
+                                    records[i].sensor_id);
+
+            // Transmit the warning over UART with a 100ms timeout
+            if (len > 0) {
+                HAL_UART_Transmit(&huart2, reinterpret_cast<uint8_t*>(warn_msg), static_cast<uint16_t>(len), 100);
+            }
+            continue; // Skip writing this unknown record
+        }
+
+        // 4. Check if the target volume is offline/disconnected
+        if (!ctx->file_is_open) {
+            continue;
+        }
+
+        // 5. File size management (Rotation)
+        // Check if adding this 16-byte record will exceed the 1 MiB limit
+        if ((ctx->current_file_bytes + sizeof(LogRecord_t)) > TelemetryFileSizeBytes) {
+            if (!OpenNewTelemetryFile(ctx)) {
+                overall_success = false;
+                continue; // Failed to rotate file, skip this record
+            }
+        }
+
+        // 6. Write exactly one record to the FatFs RAM buffer
+        UINT bytes_written = 0u;
+        FRESULT result = f_write(&ctx->active_file, &records[i], sizeof(LogRecord_t), &bytes_written);
+
+        if ((result == FR_OK) && (bytes_written == sizeof(LogRecord_t))) {
+            ctx->current_file_bytes += sizeof(LogRecord_t);
+
+            // Flag which volume actually received data so we can selectively sync later
+            if (ctx == &vol_eps) {
+                eps_written = true;
+            } else if (ctx == &vol_payload) {
+                payload_written = true;
+            }
+        } else {
+            overall_success = false; // Disk error on write
         }
     }
 
-    UINT bytes_written = 0u;
-    FRESULT result = f_write(&telemetry_file, records, bytes_to_write, &bytes_written);
-    if ((result == FR_OK) && (bytes_written != bytes_to_write))
-    {
-        result = FR_DISK_ERR;
+    // 7. Commit changes to physical SD Card
+    // Synchronize and save session metadata ONLY for touched volumes.
+    // This minimizes blocking time and SD card wear.
+    if (eps_written) {
+        (void)f_sync(&vol_eps.active_file);
+        (void)SessionStore_Save(vol_eps.volume_path, &vol_eps.session);
     }
-    if (result == FR_OK)
-    {
-        result = f_sync(&telemetry_file);
-    }
-    if (result != FR_OK)
-    {
-        return false;
+    if (payload_written) {
+        (void)f_sync(&vol_payload.active_file);
+        (void)SessionStore_Save(vol_payload.volume_path, &vol_payload.session);
     }
 
-    current_file_bytes += bytes_to_write;
-    session.last_committed_time_ms = records[record_count - 1u].obc_time_ms;
-    return SessionStore_Save(&session);
+    return overall_success;
 }
