@@ -1,7 +1,7 @@
 /* Public OBC interface for reading the payload through the shared I2C register protocol. */
 #pragma once
 
-#include "../../common/protocol.h"
+#include "../../common/i2c/protocol.h"
 #include "../../common/legacy_payload_data.h"
 #include "stm32l4xx_hal.h"
 

@@ -2,7 +2,7 @@
 
 #include <stdint.h>
 #include <stdbool.h>
-#include "../../common/protocol.h"
+#include "../../common/i2c/protocol.h"
 #include "../../common/legacy_payload_data.h" // PayloadData_t
 
 #ifdef __cplusplus

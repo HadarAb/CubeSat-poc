@@ -13,7 +13,7 @@ RECORD_FMT = '<IIBBBBhHHHB7sI' # struct.calcsize(RECORD_FMT) == 32
 FRAME_START = 0xA55A
 MAX_PAYLOAD_SIZE = 64
 
-# Must match UartFrameHeader_t and UartPayload_t in common/uart_protocol.h.
+# Must match UartFrameHeader_t and UartPayload_t in common/uart/uart_protocol.h.
 HEADER = struct.Struct("<HBHIH")
 PAYLOAD = struct.Struct("<BBBBIhHHBII")
 CRC = struct.Struct("<I")

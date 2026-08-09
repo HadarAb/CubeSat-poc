@@ -34,5 +34,5 @@ command or telemetry traffic. Text longer than 64 bytes is truncated.
 The protocol tests do not require serial hardware or `pyserial`:
 
 ```powershell
-python -m unittest -v test_protocol.py
+python -m unittest discover -s tests -t . -p "test_*.py" -v
 ```

@@ -66,4 +66,8 @@ SPI1 `DataSize`/`BaudRatePrescaler` reverting to HAL defaults, `BSP_LED_Init`
 reappearing on PA5 (which is also SPI1_SCK), the RTOS entry point losing its call
 to `ObcController_Process()`, and `ffconf.h` drifting out of sync with `obc.ioc`.
 
+Phase 4 PC simulators:
+- `python payload_sim.py` drives Payload `TEMP`, `TDOSE`, `SEL`, and `NRESET` values.
+- `python eps_sim.py` drives EPS battery, temperature, and solar-panel values.
+- Both run without hardware in dry-run mode; see `simulators/README.md` for options.
 

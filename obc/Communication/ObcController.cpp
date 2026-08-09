@@ -5,9 +5,9 @@
 
 #include "I2CMaster.hpp"
 #include "UartProtocol.hpp"
-#include "../../common/bus_config.h"
-#include "../../common/protocol.h"
-#include "../../common/uart_protocol.h"
+#include "../../common/i2c/bus_config.h"
+#include "../../common/i2c/protocol.h"
+#include "../../common/uart/uart_protocol.h"
 #include "PayloadCollector.hpp"
 
 namespace {

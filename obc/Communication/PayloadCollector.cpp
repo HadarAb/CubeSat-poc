@@ -1,7 +1,7 @@
 #include "PayloadCollector.hpp"
-#include "../../common/protocol.h" // PayloadData_t and PAYLOAD_NODE_ID
+#include "../../common/i2c/protocol.h" // PayloadData_t and PAYLOAD_NODE_ID
 #include "../../common/log_record.h" // LogRecord_t definition
-#include "../../common/bus_config.h" // PAYLOAD_I2C_ADDRESS_HAL
+#include "../../common/i2c/bus_config.h" // PAYLOAD_I2C_ADDRESS_HAL
 #include "../../common/crc32.h" // CRC functions
 #include "cmsis_os2.h" // osKernel, osDelay, osMutex
 #include "i2c.h" // hi2c1 and HAL functions of I2C
