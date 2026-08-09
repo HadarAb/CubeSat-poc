@@ -5,7 +5,7 @@
 #include "../../common/crc32.h" // CRC functions
 #include "cmsis_os2.h" // osKernel, osDelay, osMutex
 #include "i2c.h" // hi2c1 and HAL functions of I2C
-#include "../../common/vtable.h" // VTable_HashName
+#include "../../common/vtable/vtable.h" // VTable_HashName
 #include "../Core/Inc/rtc.h" // RTC_get_epoch(), RTC_get_boot_count()
 
 #include <string.h> // memset
