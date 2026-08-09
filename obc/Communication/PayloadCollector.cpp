@@ -5,6 +5,8 @@
 #include "../../common/crc32.h" // CRC functions
 #include "cmsis_os2.h" // osKernel, osDelay, osMutex
 #include "i2c.h" // hi2c1 and HAL functions of I2C
+#include "../../common/vtable.h" // VTable_HashName
+#include "../Core/Inc/rtc.h" // RTC_get_epoch(), RTC_get_boot_count()
 
 #include <string.h> // memset
 #include <stdint.h>
@@ -80,15 +82,16 @@ bool PayloadCollector_GetSnapshot(uint8_t node_id, Snapshot *out)
 
 	return out->valid;
 }
-// DELETE WHEN GEORGE PUSHES PHASE 4 TO GIT
+
 /*
- * Hardcoded Sensor IDs for the MVP (since vtable.c is not pushed yet).
- * The top 8 bits are the Node ID, the bottom 8 bits are the unique sensor index.
+ * Semi-Hardcoded Sensor IDs for the MVP.
+ * Top 8 bits: Node ID (CRITICAL for SD routing).
+ * Bottom 8 bits: VTable Hash of the exact keys requested by the lecturer.
  */
-#define SENSOR_ID_PAYLOAD_TEMP     ((PAYLOAD_NODE_ID << 8) | 0x01)
-#define SENSOR_ID_PAYLOAD_HUMIDITY ((PAYLOAD_NODE_ID << 8) | 0x02)
-#define SENSOR_ID_PAYLOAD_RAD      ((PAYLOAD_NODE_ID << 8) | 0x03)
-#define SENSOR_ID_EPS_BATTERY      ((EPS_NODE_ID << 8)     | 0x01)
+#define SENSOR_ID_PAYLOAD_TEMP     ((uint16_t)(PAYLOAD_NODE_ID << 8) | (VTable_HashName("Temp")     & 0xFF))
+#define SENSOR_ID_PAYLOAD_HUMIDITY ((uint16_t)(PAYLOAD_NODE_ID << 8) | (VTable_HashName("Humidity") & 0xFF))
+#define SENSOR_ID_PAYLOAD_RAD      ((uint16_t)(PAYLOAD_NODE_ID << 8) | (VTable_HashName("RadFET")   & 0xFF))
+#define SENSOR_ID_EPS_BATTERY      ((uint16_t)(EPS_NODE_ID     << 8) | (VTable_HashName("VBat")     & 0xFF))
 
 /* Helper structure for the publish fan-out loop */
 struct Measurement {
@@ -122,8 +125,7 @@ static void publish(NodeState &n, const PayloadData_t &raw)
         LogRecord_t rec;
         memset(&rec, 0, sizeof(rec)); // Clear memory
 
-        // Using OS ticks / 1000 as a temporary epoch substitute for the MVP
-        rec.epoch_s = now / 1000U;
+        rec.epoch_s = RTC_get_epoch();
         rec.sensor_id = measurements[i].sensor_id;
         rec.type = LOG_RECORD_TYPE_TELEMETRY;
         rec.len = 4; // We are sending 4 bytes of data (int32_t)
@@ -200,6 +202,23 @@ static void collect_from_node(NodeState &n)
 
 void payload_collector_run()
 {
+	// Boot marker generation
+	LogRecord_t boot_rec;
+	memset(&boot_rec, 0, sizeof(boot_rec));
+
+	boot_rec.epoch_s = RTC_get_epoch();
+	boot_rec.sensor_id = 0xFFFF; // 0xFFFF signals a System/OBC Event
+	boot_rec.type = 0x02; // 0x02 represents LOG_RECORD_TYPE_BOOT
+	boot_rec.len = 4; // We are sending 4 bytes of data
+
+	uint32_t current_boot_count = RTC_get_boot_count(); // Fetch from hardware backup register
+	memcpy(boot_rec.value, &current_boot_count, sizeof(current_boot_count));
+
+	boot_rec.crc32 = Protocol_Crc32((const uint8_t*)&boot_rec, sizeof(LogRecord_t) - sizeof(uint32_t));
+
+	// Push the Boot Marker to the SD queue immediately upon boot
+	osMessageQueuePut(q_telemetryHandle, &boot_rec, 0U, 100U);
+
 	uint32_t next = osKernelGetTickCount();
 	while (1) {
 		next += COLLECT_PERIOD_TICKS;
