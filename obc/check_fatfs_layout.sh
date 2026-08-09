@@ -84,5 +84,32 @@ if ! grep -qE '^[[:space:]]*ObcController_Process[[:space:]]*\(' Core/Src/freert
   rc=1
 fi
 
-[ "$rc" -eq 0 ] && echo "OK: FatFs layout, SD driver wiring, SPI1 settings, PA5 and RTOS entry point all intact."
+# --- 6. ffconf.h is in sync with the .ioc ----------------------------------
+# CubeMX writes the regenerated ffconf.h into the root FATFS/Target/ tree, which
+# the cleanup above deletes. The copy the compiler actually reads lives under
+# Storage/FATFS/Target/, so a FATFS setting changed in CubeMX is silently lost
+# unless it is copied across before the root tree is removed. This compares the
+# two rather than hardcoding values, so it still works when the settings change.
+ioc_get() { grep -E "^FATFS\.$1=" obc.ioc 2>/dev/null | head -1 | cut -d= -f2; }
+hdr_get() { grep -E "^#define[[:space:]]+$1[[:space:]]" Storage/FATFS/Target/ffconf.h 2>/dev/null | head -1 | awk '{print $3}'; }
+
+for setting in _VOLUMES:1 _MULTI_PARTITION:0; do
+  name="${setting%%:*}"
+  default="${setting##*:}"
+  want="$(ioc_get "$name")"
+  [ -z "$want" ] && want="$default"   # CubeMX omits settings left at their default
+  have="$(hdr_get "$name")"
+  if [ -z "$have" ]; then
+    echo "FAIL: $name not found in Storage/FATFS/Target/ffconf.h."
+    rc=1
+  elif [ "$want" != "$have" ]; then
+    echo "FAIL: $name is $have in Storage/FATFS/Target/ffconf.h but $want in obc.ioc."
+    echo "      The regenerated ffconf.h was deleted with the root FATFS/ tree."
+    echo "      Re-generate, then BEFORE deleting obc/FATFS/ run:"
+    echo "        cp obc/FATFS/Target/ffconf.h obc/Storage/FATFS/Target/ffconf.h"
+    rc=1
+  fi
+done
+
+[ "$rc" -eq 0 ] && echo "OK: FatFs layout, SD driver wiring, SPI1 settings, PA5, RTOS entry point and ffconf.h sync all intact."
 exit $rc
