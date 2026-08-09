@@ -25,7 +25,6 @@
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include "I2CSlave.hpp"
-#include "PayloadSim.hpp"
 #include "PayloadUart.hpp"
 #include "../../common/vtable.h"
 /* USER CODE END Includes */
@@ -99,12 +98,6 @@ int main(void)
   VTable_Init();
   PayloadUart_Init();
 
-  /*
-   * Transitional legacy path: PayloadSim still feeds REG_DATA until the next
-   * milestone replaces the I2C register file with VTable protocol v2.
-   */
-  PayloadSim_Init();
-
   if (I2CSlave_Init(&hi2c1) != HAL_OK)
   {
     Error_Handler();
@@ -122,7 +115,6 @@ int main(void)
   while (1)
   {
     PayloadUart_Process();
-    PayloadSim_Tick();
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */

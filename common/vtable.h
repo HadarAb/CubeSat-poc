@@ -2,6 +2,7 @@
 #define CUBESAT_COMMON_VTABLE_H
 
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 
 #ifdef __cplusplus
@@ -52,6 +53,7 @@ typedef struct __attribute__((packed))
 
 
 //i2c frame when you know the entity name and just need the value
+// len == 0 means the selected key does not exist
 typedef struct __attribute__((packed))
 {
     uint8_t type;
@@ -72,6 +74,8 @@ typedef struct __attribute__((packed))
 
 #define VT_VALUE_WIRE_SIZE ((uint16_t)sizeof(VtValueWire_t))
 #define VT_ENTRY_WIRE_SIZE ((uint16_t)sizeof(VtEntryWire_t))
+#define VT_VALUE_CRC_SIZE ((uint32_t)offsetof(VtValueWire_t, crc16))
+#define VT_ENTRY_CRC_SIZE ((uint32_t)offsetof(VtEntryWire_t, crc16))
 
 /* Clears the table. Call once before the scheduler starts. */
 void VTable_Init(void);
