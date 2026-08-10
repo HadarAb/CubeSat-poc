@@ -11,14 +11,14 @@
 #include "PayloadCollector.hpp"
 
 namespace {
-/* Builds the fixed UART payload from the latest thread-safe snapshot. */
-UartPayload_t BuildPayload(void)
+/* Builds the fixed UART payload from one node's latest thread-safe snapshot. */
+UartPayload_t BuildPayload(uint8_t node_id)
 {
 	UartPayload_t payload = {};
 	Snapshot snap;
 
 	// Fetch the latest telemetry snapshot safely
-	bool is_valid = PayloadCollector_GetSnapshot(PAYLOAD_NODE_ID, &snap);
+	bool is_valid = PayloadCollector_GetSnapshot(node_id, &snap);
 
 	if (is_valid) {
 		// Populate payload with valid telemetry data
@@ -64,9 +64,15 @@ void HandleRequest(const UartRequest_t& req)
     {
         case UART_MSG_STATUS:
         case UART_MSG_PAYLOAD:
+        {
+            const UartPayload_t payload = BuildPayload(PAYLOAD_NODE_ID);
+            UartProtocol_SendFrame(req.msg_type, req.sequence, &payload, sizeof(payload));
+            break;
+        }
+
         case UART_MSG_BATTERY:
         {
-            const UartPayload_t payload = BuildPayload();
+            const UartPayload_t payload = BuildPayload(EPS_NODE_ID);
             UartProtocol_SendFrame(req.msg_type, req.sequence, &payload, sizeof(payload));
             break;
         }
