@@ -30,7 +30,6 @@
 /* USER CODE BEGIN Includes */
 
 #include "ObcController.hpp"
-#include "SdCard.hpp"
 
 /* USER CODE END Includes */
 
@@ -115,7 +114,6 @@ int main(void)
   HAL_RTCEx_BKUPWrite(&hrtc, RTC_BKP_DR1, current_boot_count + 1);
 
   ObcController_Init(&hi2c1);
-  SdCard_RunStartupTest();
 
   /* USER CODE END 2 */
 
