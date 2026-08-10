@@ -1,10 +1,10 @@
 #include "PayloadCollector.hpp"
+#include "I2CMaster.hpp"
 #include "../../common/i2c/protocol.h" // PayloadData_t and PAYLOAD_NODE_ID
 #include "../../common/log_record.h" // LogRecord_t definition
 #include "../../common/i2c/bus_config.h" // PAYLOAD_I2C_ADDRESS_HAL
 #include "../../common/crc32.h" // CRC functions
 #include "cmsis_os2.h" // osKernel, osDelay, osMutex
-#include "i2c.h" // hi2c1 and HAL functions of I2C
 #include "../../common/vtable/vtable.h" // VTable_HashName
 #include "../Core/Inc/rtc.h" // RTC_get_epoch(), RTC_get_boot_count()
 
@@ -13,13 +13,10 @@
 #include <stdbool.h>
 
 
-// 20ms timeout is long enough for the data to arrive, but short enough to keep the system responsive.
-static const uint32_t I2C_TIMEOUT_MS = 20U;
-
 // Calculates exact ticks for 500ms based on the OS frequency, avoiding hardcoded values.
 static const uint32_t COLLECT_PERIOD_TICKS = 500U * osKernelGetTickFreq() / 1000U;
 
-extern osMessageQueueId_t q_telemetryHandle; // from freertos.c
+extern osMessageQueueId_t q_telemetryHandle; // from freertos.c the queue
 extern osMutexId_t i2c_mtxHandle; // shared I2C bus mutex
 
 struct NodeState {
@@ -29,14 +26,13 @@ struct NodeState {
     uint32_t err_count;
     uint32_t crc_fail;
     uint8_t consecutive_errors; // tracks successive failures to avoid false offline alerts
-    uint16_t seq; // sequence number for the log record
 };
 
-// Array of all I2C devices. To add a new sensor later, just add a line here.
-// Keeps track of the hardware address and current health status for each I2C node.
+//the devices that the OBC knows exist (EPS and PAYLOAD )
+//arr of there status
 static NodeState s_nodes[] = {
-    {PAYLOAD_I2C_ADDRESS_HAL, PAYLOAD_NODE_ID, false, 0, 0, 0, 0},
-    {EPS_I2C_ADDRESS_HAL, EPS_NODE_ID, false, 0, 0, 0, 0}, // Day 6
+    {PAYLOAD_I2C_ADDRESS_HAL, PAYLOAD_NODE_ID, false, 0, 0, 0},
+    {EPS_I2C_ADDRESS_HAL, EPS_NODE_ID, false, 0, 0, 0},
 };
 
 // calculate the number of nodes in the array (avoid hard coding)
@@ -70,6 +66,7 @@ void PayloadCollector_Init(void)
 }
 
 // thread safe function for GroundComm to read the latest data
+// snapshot will be filled with data , threw this function you grab it into out
 bool PayloadCollector_GetSnapshot(uint8_t node_id, Snapshot *out)
 {
 	// Wait max 10 ticks for the mutex
@@ -83,121 +80,234 @@ bool PayloadCollector_GetSnapshot(uint8_t node_id, Snapshot *out)
 	return out->valid;
 }
 
-/*
- * Semi-Hardcoded Sensor IDs for the MVP.
- * Top 8 bits: Node ID (CRITICAL for SD routing).
- * Bottom 8 bits: VTable Hash of the exact keys requested by the lecturer.
- */
-#define SENSOR_ID_PAYLOAD_TEMP     ((uint16_t)(PAYLOAD_NODE_ID << 8) | (VTable_HashName("Temp")     & 0xFF))
-#define SENSOR_ID_PAYLOAD_HUMIDITY ((uint16_t)(PAYLOAD_NODE_ID << 8) | (VTable_HashName("Humidity") & 0xFF))
-#define SENSOR_ID_PAYLOAD_RAD      ((uint16_t)(PAYLOAD_NODE_ID << 8) | (VTable_HashName("RadFET")   & 0xFF))
-#define SENSOR_ID_EPS_BATTERY      ((uint16_t)(EPS_NODE_ID     << 8) | (VTable_HashName("VBat")     & 0xFF))
-
-/* Helper structure for the publish fan-out loop */
-struct Measurement {
-    uint16_t sensor_id;
-    int32_t value;
+enum class SnapshotField : uint8_t
+{
+    Temperature,
+    TotalDose,
+    SelCount,
+    ResetCount,
+    BatteryVoltage,
+    StoredOnly
 };
 
-// Publishes data to both the SD queue (as thin records) and the live Snapshot (fat record)
-static void publish(NodeState &n, const PayloadData_t &raw)
+struct KeySpec
 {
-    uint32_t now = osKernelGetTickCount();
+    const char* name;
+    VtType_t expected_type;
+    SnapshotField snapshot_field;
+};
 
-    // Break the fat PayloadData_t into individual 16-byte measurements
-    Measurement measurements[4];
-    uint8_t m_count = 0;
+/* Four fixed demo reads per node. Add more EPS panel keys here when needed. */
+static const KeySpec PAYLOAD_KEYS[] = {
+    {"TEMP",   VT_TYPE_F32, SnapshotField::Temperature},
+    {"TDOSE",  VT_TYPE_F32, SnapshotField::TotalDose},
+    {"SEL",    VT_TYPE_U32, SnapshotField::SelCount},
+    {"NRESET", VT_TYPE_U32, SnapshotField::ResetCount},
+};
 
-    if (n.node_id == PAYLOAD_NODE_ID) {
-        // Extract 3 sensors from the Payload board
-        measurements[0] = { SENSOR_ID_PAYLOAD_TEMP, (int32_t)raw.temperature_c_x10 };
-        measurements[1] = { SENSOR_ID_PAYLOAD_HUMIDITY, (int32_t)raw.humidity_pct_x10 };
-        measurements[2] = { SENSOR_ID_PAYLOAD_RAD, (int32_t)raw.radiation_cps };
-        m_count = 3;
-    } else if (n.node_id == EPS_NODE_ID) {
-        // Extract 1 sensor from the EPS board (Battery)
-        measurements[0] = { SENSOR_ID_EPS_BATTERY, (int32_t)raw.battery_pct };
-        m_count = 1;
+static const KeySpec EPS_KEYS[] = {
+    {"VBAT",  VT_TYPE_F32, SnapshotField::BatteryVoltage},
+    {"TEMP",  VT_TYPE_F32, SnapshotField::Temperature},
+    {"SP0_T", VT_TYPE_F32, SnapshotField::StoredOnly},
+    {"SP0_I", VT_TYPE_F32, SnapshotField::StoredOnly},
+};
+
+static float DecodeF32(const VtValueWire_t& wire)
+{
+    float value = 0.0f;
+    memcpy(&value, wire.value, sizeof(value));
+    return value;
+}
+
+static uint32_t DecodeU32(const VtValueWire_t& wire)
+{
+    uint32_t value = 0u;
+    memcpy(&value, wire.value, sizeof(value));
+    return value;
+}
+
+static int16_t ToTenths(float value)
+{
+    float scaled = value * 10.0f;
+    if (!(scaled == scaled)) {
+        return 0;
     }
-
-    // Loop over extracted measurements and send each as a separate LogRecord_t to the SD
-    for (uint8_t i = 0; i < m_count; ++i) {
-        LogRecord_t rec;
-        memset(&rec, 0, sizeof(rec)); // Clear memory
-
-        rec.epoch_s = RTC_get_epoch();
-        rec.sensor_id = measurements[i].sensor_id;
-        rec.type = LOG_RECORD_TYPE_TELEMETRY;
-        rec.len = 4; // We are sending 4 bytes of data (int32_t)
-
-        // Safely copy the 4 bytes of the actual measurement value into the payload array
-        memcpy(rec.value, &measurements[i].value, sizeof(int32_t));
-
-        // Calculate CRC for this specific 16-byte slot (adjust LOG_RECORD_CRC_SIZE if needed)
-        rec.crc32 = Protocol_Crc32((const uint8_t*)&rec, sizeof(LogRecord_t) - sizeof(uint32_t));
-
-        // Put in queue with 0 timeout. If the queue is full, count it as dropped.
-        if (osMessageQueuePut(q_telemetryHandle, &rec, 0U, 0U) != osOK) {
-            ++s_dropped_frames;
-        }
+    if (scaled > 32767.0f) {
+        return 32767;
     }
+    if (scaled < -32768.0f) {
+        return -32768;
+    }
+    scaled += (scaled >= 0.0f) ? 0.5f : -0.5f;
+    return static_cast<int16_t>(scaled);
+}
 
-    // Update the live snapshot for GroundComm (UNCHANGED!)
-    // The Python GS still needs the fat PayloadData_t structure.
-    if (osMutexAcquire(s_snapshot_mtx, 10U) == osOK) {
-        Snapshot &sn = s_snapshot[index_of(n.node_id)];
-        sn.data = raw;
-        sn.obc_time_ms = now;
-        sn.valid = true;
+static uint16_t ToU16(float value)
+{
+    if (!(value == value) || (value <= 0.0f)) {
+        return 0u;
+    }
+    if (value >= 65535.0f) {
+        return 65535u;
+    }
+    return static_cast<uint16_t>(value + 0.5f);
+}
+
+/* Temporary compatibility mapping for the unchanged GS battery-percent field. */
+static uint8_t BatteryVoltageToPercent(float voltage)
+{
+    constexpr float EmptyVoltage = 3.30f;
+    constexpr float FullVoltage = 4.20f;
+
+    if (!(voltage == voltage) || (voltage <= EmptyVoltage)) {
+        return 0u;
+    }
+    if (voltage >= FullVoltage) {
+        return 100u;
+    }
+    return static_cast<uint8_t>(
+        (((voltage - EmptyVoltage) * 100.0f) / (FullVoltage - EmptyVoltage)) + 0.5f);
+}
+
+/*  */
+static void ApplyToSnapshot(const KeySpec& spec, const VtValueWire_t& wire,
+                            PayloadData_t* snapshot)
+{
+    switch (spec.snapshot_field) {
+        case SnapshotField::Temperature:
+            snapshot->temperature_c_x10 = ToTenths(DecodeF32(wire));
+            break;
+
+        case SnapshotField::TotalDose:
+            /* Compatibility only: the unchanged GS labels this field radiation_cps. */
+            snapshot->radiation_cps = ToU16(DecodeF32(wire));
+            break;
+
+        case SnapshotField::SelCount:
+            if (DecodeU32(wire) != 0u) {
+                snapshot->flags |= PAYLOAD_FLAG_SEU_INJECTED;
+            }
+            break;
+
+        case SnapshotField::BatteryVoltage:
+            snapshot->battery_pct = BatteryVoltageToPercent(DecodeF32(wire));
+            break;
+
+        case SnapshotField::ResetCount:
+        case SnapshotField::StoredOnly:
+            /* These values are preserved in LogRecord_t but have no old GS field. */
+            break;
+    }
+}
+
+/* grabing data from node into a record to later store it on the sd */
+static void QueueValue(const NodeState& node, const KeySpec& spec,const VtValueWire_t& wire)
+{
+    LogRecord_t record = {};
+    record.epoch_s = RTC_get_epoch();
+
+    const uint16_t node_part = static_cast<uint16_t>(static_cast<uint16_t>(node.node_id) << 8u);
+    const uint16_t key_part = static_cast<uint16_t>(VTable_HashName(spec.name) & 0x00FFu);
+
+    record.sensor_id = static_cast<uint16_t>(node_part | key_part);
+    record.type = LOG_RECORD_TYPE_TELEMETRY;
+    record.len = wire.len;
+    memcpy(record.value, wire.value, wire.len);
+    record.crc32 = Protocol_Crc32(reinterpret_cast<const uint8_t*>(&record),
+    									LOG_RECORD_CRC_SIZE);
+
+    if ((q_telemetryHandle == nullptr)
+        || (osMessageQueuePut(q_telemetryHandle, &record, 0u, 0u) != osOK)) {
+        ++s_dropped_frames;
+    }
+}
+
+/*fill the snapshot with data */
+static void PublishSnapshot(const NodeState& node, const PayloadData_t& data,
+                            uint32_t now)
+{
+    if (osMutexAcquire(s_snapshot_mtx, 10u) == osOK) {
+        Snapshot& snapshot = s_snapshot[index_of(node.node_id)];
+        snapshot.data = data;
+        snapshot.obc_time_ms = now;
+        snapshot.valid = true;
         osMutexRelease(s_snapshot_mtx);
     }
 }
 
-static void collect_from_node(NodeState &n)
+/* collects data from the nodes and puts it in snapshots and in queue
+ * a long part here is inside the mutex */
+static void collect_from_node(NodeState& node)
 {
-	PayloadData_t raw;
-	HAL_StatusTypeDef i2c_status = HAL_ERROR; // default value
+    const KeySpec* keys = (node.node_id == PAYLOAD_NODE_ID) ? PAYLOAD_KEYS : EPS_KEYS;
+    const uint8_t key_count = (node.node_id == PAYLOAD_NODE_ID)
+        ? static_cast<uint8_t>(sizeof(PAYLOAD_KEYS) / sizeof(PAYLOAD_KEYS[0]))
+        : static_cast<uint8_t>(sizeof(EPS_KEYS) / sizeof(EPS_KEYS[0]));
 
-	if (osMutexAcquire(i2c_mtxHandle, osWaitForever) == osOK) {
-		// read 17 bytes from the payload via I2C
-		i2c_status = HAL_I2C_Mem_Read(
-			&hi2c1,
-			n.addr,
-			REG_DATA,
-			I2C_MEMADD_SIZE_8BIT,
-			(uint8_t *)&raw,
-			sizeof(raw),
-			I2C_TIMEOUT_MS
-		);
+    PayloadData_t snapshot_data = {};
+    snapshot_data.timestamp_ms = osKernelGetTickCount();
+    snapshot_data.node_id = node.node_id;
 
-		osMutexRelease(i2c_mtxHandle);
-	}
+    bool node_responded = false;
+    bool received_value = false;
 
-	if (i2c_status != HAL_OK) {
-		++n.err_count;
-		++n.consecutive_errors;
+    if ((i2c_mtxHandle == nullptr)
+        || (osMutexAcquire(i2c_mtxHandle, osWaitForever) != osOK)) {
+        ++node.err_count;
+        return;
+    }
 
-		// mark as offline only after 3 consecutive failures
-		if (n.consecutive_errors >= 3) {
-			n.online = false;
-		}
-		// skip processing and try again next cycle
-		return;
-	}
-	// success, reset the consecutive error counter
-	n.consecutive_errors = 0;
+    for (uint8_t index = 0u; index < key_count; ++index) {
+        VtValueWire_t wire = {};
+        //request from one of the nodes for data by index and name
+        const I2CKeyReadResult_t result = I2CMaster_ReadKey(
+        		node.addr, keys[index].name, keys[index].expected_type, &wire);
 
-	// validate data integrity (crc32)
-	uint32_t computed_crc = Protocol_Crc32((const uint8_t *)&raw, sizeof(raw) - sizeof(raw.crc32));
+        if (result == I2C_KEY_READ_BUS_ERROR) {
+            ++node.err_count;
+            break;
+        }
 
-	if (computed_crc != raw.crc32) {
-		 // link corruption. drop the frame but stay online
-		++n.crc_fail;
-		return;
-	}
+        node_responded = true;
+        if (result == I2C_KEY_READ_CRC_ERROR) {
+            ++node.crc_fail;
+            continue;
+        }
+        if (result == I2C_KEY_READ_FORMAT_ERROR) {
+            ++node.err_count;
+            continue;
+        }
+        if (result == I2C_KEY_READ_MISSING) {
+            continue;
+        }
 
-	n.online = true;
-	publish(n, raw);
+        received_value = true;
+        //puts data in local snapshot before publishing
+        ApplyToSnapshot(keys[index], wire, &snapshot_data);
+        //put the data inside the queue
+        QueueValue(node, keys[index], wire);
+    }
+    //a long mutex long for all i2c calls
+    osMutexRelease(i2c_mtxHandle);
+
+    if (node_responded) {
+        node.consecutive_errors = 0u;
+        node.online = true;
+    } else {
+        ++node.consecutive_errors;
+        if (node.consecutive_errors >= 3u) {
+            node.online = false;
+        }
+    }
+
+    //did we recive any thing good
+    if (received_value) {
+    	//check crc
+        snapshot_data.crc32 = Protocol_Crc32(
+            reinterpret_cast<const uint8_t*>(&snapshot_data), PAYLOAD_DATA_CRC_SIZE);
+        //publish it inside snapshot for later use
+        PublishSnapshot(node, snapshot_data, snapshot_data.timestamp_ms);
+    }
 }
 
 void payload_collector_run()
@@ -208,13 +318,14 @@ void payload_collector_run()
 
 	boot_rec.epoch_s = RTC_get_epoch();
 	boot_rec.sensor_id = 0xFFFF; // 0xFFFF signals a System/OBC Event
-	boot_rec.type = 0x02; // 0x02 represents LOG_RECORD_TYPE_BOOT
+	boot_rec.type = LOG_RECORD_TYPE_BOOT;
 	boot_rec.len = 4; // We are sending 4 bytes of data
 
 	uint32_t current_boot_count = RTC_get_boot_count(); // Fetch from hardware backup register
 	memcpy(boot_rec.value, &current_boot_count, sizeof(current_boot_count));
 
-	boot_rec.crc32 = Protocol_Crc32((const uint8_t*)&boot_rec, sizeof(LogRecord_t) - sizeof(uint32_t));
+	boot_rec.crc32 = Protocol_Crc32((const uint8_t*)&boot_rec,
+									sizeof(LogRecord_t) - sizeof(uint32_t));
 
 	// Push the Boot Marker to the SD queue immediately upon boot
 	osMessageQueuePut(q_telemetryHandle, &boot_rec, 0U, 100U);
@@ -222,6 +333,7 @@ void payload_collector_run()
 	uint32_t next = osKernelGetTickCount();
 	while (1) {
 		next += COLLECT_PERIOD_TICKS;
+		// the important part where it collects the data and publishes it
 		for (auto &n : s_nodes) {
 			collect_from_node(n);
 		}

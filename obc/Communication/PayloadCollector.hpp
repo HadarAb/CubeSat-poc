@@ -27,9 +27,9 @@ typedef struct {
 void PayloadCollector_Init(void);
 
 /**
- * @brief Main FreeRTOS task loop for the Payload Collector.
+ * @brief Main FreeRTOS task loop for the Payload/EPS telemetry collector.
  *
- * Polls the I2C nodes at a fixed 500ms interval. Pushes telemetry records
+ * Polls both configured I2C nodes at a fixed 500ms interval. Pushes telemetry records
  * to the SD logger queue and updates the live snapshot for Ground Station
  * queries. This function never returns.
  */

@@ -1,11 +1,13 @@
-/* Implements OBC-side I2C register reads and payload CRC validation. */
+/* Implements OBC-side I2C register and VTable key reads. */
 #include "I2CMaster.hpp"
 
-#include "../../common/crc32.h"
+#include "../../common/i2c/crc16.h"
+
+#include <cstring>
 
 namespace
 {
-constexpr uint32_t I2cTimeoutMs = 100u;
+constexpr uint32_t I2cTimeoutMs = 20u;
 I2C_HandleTypeDef* master_i2c = nullptr;
 
 /*
@@ -31,6 +33,7 @@ void I2CMaster_Init(I2C_HandleTypeDef* i2c_handle)
     master_i2c = i2c_handle;
 }
 
+/*request the other side id */
 HAL_StatusTypeDef I2CMaster_ReadWhoAmI(uint16_t slave_address, uint8_t* node_id)
 {
     if ((master_i2c == nullptr) || (node_id == nullptr))
@@ -41,37 +44,65 @@ HAL_StatusTypeDef I2CMaster_ReadWhoAmI(uint16_t slave_address, uint8_t* node_id)
     return ReadRegister(slave_address, REG_WHOAMI, node_id, 1u);
 }
 
-/* Reads a complete payload sample and compares its stored CRC with a new calculation. */
-HAL_StatusTypeDef I2CMaster_ReadPayloadData(uint16_t slave_address, PayloadData_t* payload_data,
-                                            uint8_t* crc_valid, uint32_t* calculated_crc)
+/* request value by name */
+I2CKeyReadResult_t I2CMaster_ReadKey(uint16_t slave_address,const char* key,
+                                     VtType_t expected_type, VtValueWire_t* value)
 {
-    if ((master_i2c == nullptr) || (payload_data == nullptr) || (crc_valid == nullptr))
-    {
-        return HAL_ERROR;
-    }
-    // set defult at the start
-    *crc_valid = 0u;
-
-    // recive data set crc and the data , saves it inside payload_data
-    const HAL_StatusTypeDef status = ReadRegister(slave_address, REG_DATA,
-                                                   reinterpret_cast<uint8_t*>(payload_data),
-                                                   PAYLOAD_DATA_WIRE_SIZE);
-
-    if (status != HAL_OK)
-    {
-        return status;
+	//check starting verbs are set
+    if ((master_i2c == nullptr) || (key == nullptr) || (value == nullptr)) {
+        return I2C_KEY_READ_FORMAT_ERROR;
     }
 
-    //calculate ur own crc
-    const uint32_t crc = Protocol_Crc32(reinterpret_cast<const uint8_t*>(payload_data),
-                                        PAYLOAD_DATA_CRC_SIZE);
+    //creats space for the command and the name of the key
+    uint8_t select_request[1u + VT_NAME_LEN] = {};
+    //first byte puts the command (select)
+    select_request[0] = REG_VT_SELECT;
 
-    if (calculated_crc != nullptr)
-    {
-        *calculated_crc = crc;
+    uint8_t name_length = 0u;
+    //puts the name byte by byte
+    while ((name_length < VT_NAME_LEN) && (key[name_length] != '\0')) {
+        select_request[1u + name_length] = static_cast<uint8_t>(key[name_length]);
+        ++name_length;
     }
-    //check if crc codes match
-    *crc_valid = (crc == payload_data->crc32) ? 1u : 0u;
+    if ((name_length == 0u)
+        || ((name_length == VT_NAME_LEN) && (key[name_length] != '\0'))) {
+        return I2C_KEY_READ_FORMAT_ERROR;
+    }
 
-    return HAL_OK;
+    //transmit the request of the sensor we want a value of
+    HAL_StatusTypeDef status = HAL_I2C_Master_Transmit(master_i2c,slave_address,
+    								select_request, sizeof(select_request),I2cTimeoutMs);
+
+    if (status != HAL_OK) {
+        return I2C_KEY_READ_BUS_ERROR;
+    }
+
+    //clear value
+    std::memset(value, 0, sizeof(*value));
+
+    //here we actually get the value of the sensor we sent the name before .
+    status = ReadRegister(slave_address,REG_VT_VALUE,reinterpret_cast<uint8_t*>(value),
+    								VT_VALUE_WIRE_SIZE);
+    if (status != HAL_OK) {
+        return I2C_KEY_READ_BUS_ERROR;
+    }
+
+    //calculate crc
+    const uint16_t calculated_crc = Protocol_Crc16(
+        reinterpret_cast<const uint8_t*>(value), VT_VALUE_CRC_SIZE);
+
+    if (calculated_crc != value->crc16) {
+        return I2C_KEY_READ_CRC_ERROR;
+    }
+
+    if (value->len == 0u) {
+        return I2C_KEY_READ_MISSING;
+    }
+
+    if ((value->type != static_cast<uint8_t>(expected_type))
+        || (value->len != sizeof(uint32_t))) {
+        return I2C_KEY_READ_FORMAT_ERROR;
+    }
+
+    return I2C_KEY_READ_OK;
 }

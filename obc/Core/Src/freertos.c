@@ -27,8 +27,8 @@
 /* USER CODE BEGIN Includes */
 #include "ObcController.hpp"
 #include "PayloadCollector.hpp"
-#include "../../../Common/Log_record.h"
-#include "../../Storage/SdLogger.hpp"
+#include "../../../common/log_record.h"
+#include "SdLogger.hpp"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -150,7 +150,7 @@ void MX_FREERTOS_Init(void) {
 
   /* Create the queue(s) */
   /* creation of q_telemetry */
-  q_telemetryHandle = osMessageQueueNew (16, sizeof(uint32_t), &q_telemetry_attributes);
+  q_telemetryHandle = osMessageQueueNew (16, sizeof(LogRecord_t), &q_telemetry_attributes);
 
   /* USER CODE BEGIN RTOS_QUEUES */
   /* add queues, ... */
@@ -274,4 +274,3 @@ void StartTask_GroundComm(void *argument)
 /* USER CODE BEGIN Application */
 
 /* USER CODE END Application */
-
