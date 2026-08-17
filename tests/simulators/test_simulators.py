@@ -5,6 +5,7 @@ from ground_station.protocol import Frame, FrameParser
 from simulators.models import EpsModel, PayloadModel
 from simulators.protocol import (
     SIM_ACK_PAYLOAD,
+    SIM_GET_PAYLOAD,
     SIM_SET_PAYLOAD,
     SimMessageType,
     SimStatus,
@@ -13,6 +14,8 @@ from simulators.protocol import (
     decode_sim_ack,
     decode_sim_set,
     encode_name,
+    encode_sim_get,
+    encode_sim_list,
     encode_sim_set,
 )
 from simulators.runtime import parse_sensor_selection
@@ -35,6 +38,15 @@ class SimulatorProtocolTests(unittest.TestCase):
         decoded = decode_sim_set(FrameParser().feed(encoded)[0])
         self.assertEqual(decoded.name, "ABCDEFGH")
         self.assertEqual(decoded.value, 12)
+
+    def test_sim_get_and_list_use_the_shared_uart_frame(self):
+        get_frame = FrameParser().feed(encode_sim_get(8, "TEMP"))[0]
+        self.assertEqual(get_frame.msg_type, SimMessageType.GET)
+        self.assertEqual(get_frame.payload, SIM_GET_PAYLOAD.pack(encode_name("TEMP")))
+
+        list_frame = FrameParser().feed(encode_sim_list(9))[0]
+        self.assertEqual(list_frame.msg_type, SimMessageType.LIST)
+        self.assertEqual(list_frame.payload, b"")
 
     def test_invalid_key_name_is_rejected(self):
         with self.assertRaises(ValueError):
