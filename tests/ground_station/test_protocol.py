@@ -7,10 +7,12 @@ from ground_station.protocol import (
     HEADER,
     MAX_PAYLOAD_SIZE,
     PAYLOAD,
+    STATUS_PAYLOAD,
     Frame,
     FrameParser,
     MessageType,
     decode_payload,
+    decode_status,
     encode_frame,
     encode_request,
 )
@@ -154,7 +156,23 @@ class ProtocolTests(unittest.TestCase):
             )
 
     def test_automatic_status_has_a_distinct_message_type(self):
-        wire_payload = PAYLOAD.pack(1, 0, 2, 0, 1000, 243, 512, 18, 87, 20, 3)
+        wire_payload = STATUS_PAYLOAD.pack(
+            0,
+            1,
+            87,
+            1,
+            1,
+            1,
+            1,
+            0,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7,
+            8,
+        )
         encoded = encode_frame(
             MessageType.AUTO_STATUS,
             44,
@@ -165,7 +183,12 @@ class ProtocolTests(unittest.TestCase):
 
         self.assertEqual(frame.msg_type, MessageType.AUTO_STATUS)
         self.assertEqual(frame.sequence, 44)
-        self.assertEqual(decode_payload(frame).node_id, 2)
+        self.assertEqual(decode_status(frame).power_state, 1)
+        self.assertEqual(decode_status(frame).battery_pct, 87)
+        self.assertEqual(decode_status(frame).sd_error_count, 8)
+
+    def test_status_payload_wire_size_is_36_bytes(self):
+        self.assertEqual(STATUS_PAYLOAD.size, 36)
 
 
 if __name__ == "__main__":

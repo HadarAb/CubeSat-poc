@@ -25,10 +25,11 @@ Available interactive commands:
 Each request is only a UART header plus CRC. The OBC replies with the same
 message type and the single fixed `UartPayload_t` layout.
 
-The OBC can also send unsolicited `AUTO_STATUS` (`0x04`) frames. The receiver
-runs continuously, prints these frames as `[AUTO STATUS]`, and keeps requested
-replies separate by message type and sequence number. One reporting cycle sends
-the Payload and EPS snapshots with the same sequence number.
+The OBC can also send unsolicited `AUTO_STATUS` (`0x04`) frames. Requested and
+automatic STATUS frames contain the dedicated system-status structure: power
+state, battery, node availability, SD logger state, dropped records, overruns,
+I2C/CRC failures, and SD errors. Sensor measurements remain in `PAYLOAD` frames.
+The receiver runs continuously and keeps automatic reports separate from replies.
 
 Firmware calls to `SendUartMsg("my text")` appear as `[OBC] my text`. Debug
 text is sent inside a normal CRC-protected frame, so it does not corrupt

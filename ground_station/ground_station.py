@@ -16,6 +16,7 @@ try:
         Status,
         decode_debug_text,
         decode_payload,
+        decode_status,
         encode_request,
     )
 except ImportError:
@@ -26,6 +27,7 @@ except ImportError:
         Status,
         decode_debug_text,
         decode_payload,
+        decode_status,
         encode_request,
     )
 
@@ -137,17 +139,53 @@ def _status_name(value: int) -> str:
         return f"UNKNOWN(0x{value:02X})"
 
 
+def _power_state_name(value: int) -> str:
+    names = {
+        0: "CRITICAL",
+        1: "NORMAL",
+        2: "FULL",
+        0xFF: "UNKNOWN",
+    }
+    return names.get(value, f"UNKNOWN(0x{value:02X})")
+
+
+def _sd_state_name(value: int) -> str:
+    names = {
+        0: "INITIALIZING",
+        1: "READY",
+        2: "ERROR",
+    }
+    return names.get(value, f"UNKNOWN(0x{value:02X})")
+
+
+# Print the dedicated system-status payload used by manual and automatic STATUS.
+def _show_system_status(label: str, frame: Frame) -> None:
+    status = decode_status(frame)
+    battery = f"{status.battery_pct}%" if status.battery_valid else "unavailable"
+
+    print(f"{label} {_status_name(status.status)}")
+    print(f"  uptime:              {frame.timestamp_ms} ms")
+    print(f"  power state:          {_power_state_name(status.power_state)}")
+    print(f"  battery:              {battery}")
+    print(f"  Payload node:         {'online' if status.payload_online else 'offline'}")
+    print(f"  EPS node:             {'online' if status.eps_online else 'offline'}")
+    print(f"  SD logger:            {_sd_state_name(status.sd_state)}")
+    print(f"  dropped records:      {status.dropped_frames}")
+    print(f"  collector overruns:   {status.collector_overruns}")
+    print(
+        f"  I2C errors:           Payload={status.payload_i2c_errors}, "
+        f"EPS={status.eps_i2c_errors}"
+    )
+    print(
+        f"  I2C CRC failures:     Payload={status.payload_crc_failures}, "
+        f"EPS={status.eps_crc_failures}"
+    )
+    print(f"  SD errors:            {status.sd_error_count}")
+
+
 def show_status(station: GroundStation) -> None:
     frame = station.request(MessageType.STATUS)
-    payload = decode_payload(frame)
-    print(f"[REQUESTED STATUS] {_status_name(payload.status)}")
-    print(f"Uptime: {frame.timestamp_ms} ms")
-    print(f"Payload valid: {'yes' if payload.valid else 'no'}")
-    print(f"Payload node: 0x{payload.node_id:02X}")
-    print(
-        f"I2C reads: {payload.i2c_success_count} successful, "
-        f"{payload.i2c_error_count} failed"
-    )
+    _show_system_status("[REQUESTED STATUS]", frame)
 
 
 def show_payload(station: GroundStation) -> None:
@@ -165,26 +203,12 @@ def show_payload(station: GroundStation) -> None:
     print(f"Flags: 0x{payload.flags:02X}")
 
 
-# Display an unsolicited frame with a clear label and its source node.
+# Display an unsolicited system-status frame with a clear AUTO label.
 def show_automatic_status(frame: Frame) -> None:
     try:
-        payload = decode_payload(frame)
+        _show_system_status("\n[AUTO STATUS]", frame)
     except ValueError as error:
         print(f"\n[AUTO STATUS ERROR] {error}")
-        return
-
-    print(
-        f"\n[AUTO STATUS] sequence={frame.sequence} "
-        f"node=0x{payload.node_id:02X} "
-        f"status={_status_name(payload.status)} "
-        f"valid={'yes' if payload.valid else 'no'} "
-        f"flags=0x{payload.flags:02X} "
-        f"temperature={payload.temperature_c_x10 / 10:.1f} C "
-        f"humidity={payload.humidity_pct_x10 / 10:.1f}% "
-        f"radiation={payload.radiation_cps} cps "
-        f"battery={payload.battery_pct}% "
-        f"timestamp={payload.timestamp_ms} ms"
-    )
 
 
 def show_battery(station: GroundStation) -> None:
