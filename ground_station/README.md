@@ -25,6 +25,11 @@ Available interactive commands:
 Each request is only a UART header plus CRC. The OBC replies with the same
 message type and the single fixed `UartPayload_t` layout.
 
+The OBC can also send unsolicited `AUTO_STATUS` (`0x04`) frames. The receiver
+runs continuously, prints these frames as `[AUTO STATUS]`, and keeps requested
+replies separate by message type and sequence number. One reporting cycle sends
+the Payload and EPS snapshots with the same sequence number.
+
 Firmware calls to `SendUartMsg("my text")` appear as `[OBC] my text`. Debug
 text is sent inside a normal CRC-protected frame, so it does not corrupt
 command or telemetry traffic. Text longer than 64 bytes is truncated.

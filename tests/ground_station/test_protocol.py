@@ -153,6 +153,20 @@ class ProtocolTests(unittest.TestCase):
                 b"x" * (MAX_PAYLOAD_SIZE + 1),
             )
 
+    def test_automatic_status_has_a_distinct_message_type(self):
+        wire_payload = PAYLOAD.pack(1, 0, 2, 0, 1000, 243, 512, 18, 87, 20, 3)
+        encoded = encode_frame(
+            MessageType.AUTO_STATUS,
+            44,
+            wire_payload,
+            frame_timestamp_ms=1000,
+        )
+        frame = FrameParser().feed(encoded)[0]
+
+        self.assertEqual(frame.msg_type, MessageType.AUTO_STATUS)
+        self.assertEqual(frame.sequence, 44)
+        self.assertEqual(decode_payload(frame).node_id, 2)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -25,6 +25,7 @@ class MessageType(IntEnum):
     STATUS = 0x01
     PAYLOAD = 0x02
     BATTERY = 0x03
+    AUTO_STATUS = 0x04
     DEBUG_TEXT = 0x70
     ERROR = 0xFF
 

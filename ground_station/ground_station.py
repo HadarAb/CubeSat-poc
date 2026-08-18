@@ -3,18 +3,31 @@
 from __future__ import annotations
 
 import argparse
+import queue
 import sys
+import threading
 import time
 
-from protocol import (
-    Frame,
-    FrameParser,
-    MessageType,
-    Status,
-    decode_debug_text,
-    decode_payload,
-    encode_request,
-)
+try:
+    from .protocol import (
+        Frame,
+        FrameParser,
+        MessageType,
+        Status,
+        decode_debug_text,
+        decode_payload,
+        encode_request,
+    )
+except ImportError:
+    from protocol import (
+        Frame,
+        FrameParser,
+        MessageType,
+        Status,
+        decode_debug_text,
+        decode_payload,
+        encode_request,
+    )
 
 
 BAUD_RATE = 115200
@@ -26,6 +39,47 @@ class GroundStation:
         self.serial = serial_port
         self.parser = FrameParser()
         self.sequence = 0
+        self.response_queue: queue.Queue[Frame] = queue.Queue()
+        self.stop_event = threading.Event()
+        self.reader_thread: threading.Thread | None = None
+
+    # Start the only thread that is allowed to read from the serial port.
+    def start(self) -> None:
+        if self.reader_thread is not None and self.reader_thread.is_alive():
+            return
+
+        self.stop_event.clear()
+        self.reader_thread = threading.Thread(
+            target=self._reader_loop,
+            name="ground-station-rx",
+            daemon=True,
+        )
+        self.reader_thread.start()
+
+    # Stop the receiver before the serial port is closed.
+    def close(self) -> None:
+        self.stop_event.set()
+
+        if self.reader_thread is not None:
+            self.reader_thread.join(timeout=1.0)
+
+    # Keep receiving even while the console waits for the next user command.
+    def _reader_loop(self) -> None:
+        while not self.stop_event.is_set():
+            for frame in self._read_frames():
+                self._dispatch_frame(frame)
+
+    # Display unsolicited frames now and queue requested replies for request().
+    def _dispatch_frame(self, frame: Frame) -> None:
+        if frame.msg_type == MessageType.AUTO_STATUS:
+            show_automatic_status(frame)
+            return
+
+        if frame.msg_type == MessageType.DEBUG_TEXT:
+            print(f"\n[OBC] {decode_debug_text(frame)}")
+            return
+
+        self.response_queue.put(frame)
 
     def _next_sequence(self) -> int:
         self.sequence = (self.sequence + 1) & 0xFFFF
@@ -37,36 +91,43 @@ class GroundStation:
         return self.parser.feed(data)
 
     def request(self, msg_type: MessageType) -> Frame:
+        self.start()
+
         sequence = self._next_sequence()
         self.serial.write(encode_request(msg_type, sequence))
         self.serial.flush()
 
         deadline = time.monotonic() + RESPONSE_TIMEOUT_SECONDS
-        while time.monotonic() < deadline:
-            for frame in self._read_frames():
-                if frame.msg_type == MessageType.DEBUG_TEXT:
-                    print(f"[OBC] {decode_debug_text(frame)}")
-                    continue
+        while True:
+            remaining = deadline - time.monotonic()
 
-                if frame.sequence != sequence:
-                    continue
+            if remaining <= 0.0:
+                raise TimeoutError(
+                    f"no response from OBC within {RESPONSE_TIMEOUT_SECONDS:.1f}s"
+                )
 
-                if frame.msg_type == MessageType.ERROR:
-                    error = decode_payload(frame)
-                    raise RuntimeError(
-                        f"OBC error: {_status_name(error.status)}"
-                    )
+            try:
+                frame = self.response_queue.get(timeout=remaining)
+            except queue.Empty:
+                raise TimeoutError(
+                    f"no response from OBC within {RESPONSE_TIMEOUT_SECONDS:.1f}s"
+                ) from None
 
-                if frame.msg_type != msg_type:
-                    raise RuntimeError(
-                        f"unexpected response type 0x{frame.msg_type:02X}"
-                    )
+            if frame.sequence != sequence:
+                continue
 
-                return frame
+            if frame.msg_type == MessageType.ERROR:
+                error = decode_payload(frame)
+                raise RuntimeError(
+                    f"OBC error: {_status_name(error.status)}"
+                )
 
-        raise TimeoutError(
-            f"no response from OBC within {RESPONSE_TIMEOUT_SECONDS:.1f}s"
-        )
+            if frame.msg_type != msg_type:
+                raise RuntimeError(
+                    f"unexpected response type 0x{frame.msg_type:02X}"
+                )
+
+            return frame
 
 
 def _status_name(value: int) -> str:
@@ -79,7 +140,7 @@ def _status_name(value: int) -> str:
 def show_status(station: GroundStation) -> None:
     frame = station.request(MessageType.STATUS)
     payload = decode_payload(frame)
-    print(f"OBC status: {_status_name(payload.status)}")
+    print(f"[REQUESTED STATUS] {_status_name(payload.status)}")
     print(f"Uptime: {frame.timestamp_ms} ms")
     print(f"Payload valid: {'yes' if payload.valid else 'no'}")
     print(f"Payload node: 0x{payload.node_id:02X}")
@@ -102,6 +163,28 @@ def show_payload(station: GroundStation) -> None:
     print(f"Battery: {payload.battery_pct} %")
     print(f"Node: 0x{payload.node_id:02X}")
     print(f"Flags: 0x{payload.flags:02X}")
+
+
+# Display an unsolicited frame with a clear label and its source node.
+def show_automatic_status(frame: Frame) -> None:
+    try:
+        payload = decode_payload(frame)
+    except ValueError as error:
+        print(f"\n[AUTO STATUS ERROR] {error}")
+        return
+
+    print(
+        f"\n[AUTO STATUS] sequence={frame.sequence} "
+        f"node=0x{payload.node_id:02X} "
+        f"status={_status_name(payload.status)} "
+        f"valid={'yes' if payload.valid else 'no'} "
+        f"flags=0x{payload.flags:02X} "
+        f"temperature={payload.temperature_c_x10 / 10:.1f} C "
+        f"humidity={payload.humidity_pct_x10 / 10:.1f}% "
+        f"radiation={payload.radiation_cps} cps "
+        f"battery={payload.battery_pct}% "
+        f"timestamp={payload.timestamp_ms} ms"
+    )
 
 
 def show_battery(station: GroundStation) -> None:
@@ -196,7 +279,13 @@ def main() -> int:
             timeout=0.05,
             write_timeout=1.0,
         ) as serial_port:
-            interactive_loop(GroundStation(serial_port))
+            station = GroundStation(serial_port)
+            station.start()
+
+            try:
+                interactive_loop(station)
+            finally:
+                station.close()
     except serial.SerialException as error:
         print(f"Serial error: {error}", file=sys.stderr)
         return 1
