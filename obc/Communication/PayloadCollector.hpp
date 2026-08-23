@@ -3,7 +3,7 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include "../../common/i2c/protocol.h"
-#include "../../common/legacy_payload_data.h" // PayloadData_t
+#include "../../common/snapshot_data.h" // SnapshotData_t
 
 #ifdef __cplusplus
 extern "C" {
@@ -15,7 +15,7 @@ extern "C" {
 typedef struct {
     bool valid;
     uint32_t obc_time_ms;
-    PayloadData_t data;
+    SnapshotData_t data;
 } Snapshot;
 
 /**

@@ -15,8 +15,8 @@ typedef struct
 
 /* These helpers are used by TelemetryFileStore in Task_SD_Logger's context. */
 
-/* Loads the newest valid SESSION.BIN slot for a specific volume (e.g., "0:/"). */
-bool SessionStore_Load(const char* vol_path, SessionMetadata_t* metadata, bool* valid);
+/* Loads the newest valid SESSION.BIN slot for one directory (e.g. "PAYLOAD"). */
+bool SessionStore_Load(const char* dir_path, SessionMetadata_t* metadata, bool* valid);
 
-/* Writes the metadata to the older slot in the specific volume's SESSION.BIN. */
-bool SessionStore_Save(const char* vol_path, SessionMetadata_t* metadata);
+/* Writes the metadata to the older slot in that directory's SESSION.BIN. */
+bool SessionStore_Save(const char* dir_path, SessionMetadata_t* metadata);

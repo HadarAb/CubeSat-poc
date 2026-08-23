@@ -15,7 +15,7 @@ namespace
 constexpr uint32_t SessionMagic = 0x53534553u; /* "SESS" in little endian. */
 constexpr uint16_t SessionVersion = 1u;
 /*
- * Filenames are now generated dynamically per volume (e.g., "0:/SESSION.BIN").
+ * Filenames are generated per directory (e.g. "PAYLOAD/SESSION.BIN").
  */
 //constexpr char SessionFilename[] = "SESSION.BIN";
 
@@ -72,9 +72,9 @@ void CopySlotToMetadata(const SessionSlot_t& slot, SessionMetadata_t* metadata)
 }
 
 /* Loads the newest valid SESSION.BIN slot for a specific volume. A missing file is not an error. */
-bool SessionStore_Load(const char* vol_path, SessionMetadata_t* metadata, bool* valid)
+bool SessionStore_Load(const char* dir_path, SessionMetadata_t* metadata, bool* valid)
 {
-	if ((vol_path == nullptr) || (metadata == nullptr) || (valid == nullptr)) {
+	if ((dir_path == nullptr) || (metadata == nullptr) || (valid == nullptr)) {
 		return false;
 	}
 
@@ -83,10 +83,10 @@ bool SessionStore_Load(const char* vol_path, SessionMetadata_t* metadata, bool* 
 
 	/*
 	 * Dynamically build the filename using the provided volume path.
-	 * For example, if vol_path is "0:/", filename becomes "0:/SESSION.BIN".
+	 * For example, if dir_path is "PAYLOAD", filename becomes "PAYLOAD/SESSION.BIN".
 	 */
-	char filename[16] = {};
-	std::snprintf(filename, sizeof(filename), "%sSESSION.BIN", vol_path);
+	char filename[32] = {};
+	std::snprintf(filename, sizeof(filename), "%s/SESSION.BIN", dir_path);
 
 	FIL file = {};
 	// Open the dynamically named file
@@ -139,9 +139,9 @@ bool SessionStore_Load(const char* vol_path, SessionMetadata_t* metadata, bool* 
 }
 
 /* Writes the metadata to the older slot of the specified volume's SESSION.BIN. */
-bool SessionStore_Save(const char* vol_path, SessionMetadata_t* metadata)
+bool SessionStore_Save(const char* dir_path, SessionMetadata_t* metadata)
 {
-	if ((vol_path == nullptr) || (metadata == nullptr)) {
+	if ((dir_path == nullptr) || (metadata == nullptr)) {
 		return false;
 	}
 
@@ -157,11 +157,11 @@ bool SessionStore_Save(const char* vol_path, SessionMetadata_t* metadata)
     next.crc32 = Protocol_Crc32(reinterpret_cast<const uint8_t*>(&next), static_cast<uint32_t>(offsetof(SessionSlot_t, crc32)));
 
 	/*
-	 * Build the target path dynamically based on the volume context.
+	 * Build the target path from the directory context.
 	 * Prevents Payload (0:/) and EPS (1:/) from overwriting each other's metadata.
 	 */
-	char filename[16] = {};
-	std::snprintf(filename, sizeof(filename), "%sSESSION.BIN", vol_path);
+	char filename[32] = {};
+	std::snprintf(filename, sizeof(filename), "%s/SESSION.BIN", dir_path);
 
 	FIL file = {};
 	// Using the dynamically created filename

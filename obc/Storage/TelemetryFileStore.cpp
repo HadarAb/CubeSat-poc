@@ -11,17 +11,7 @@
 #include <cstdio>
 #include <cstring>
 
-/*
- * FatFs Multi-Partition Map:
- * FatFs requires this array when _MULTI_PARTITION is enabled.
- * It maps logical volumes ("0:", "1:") to physical drives and partitions.
- */
-extern "C" {
-	PARTITION VolToPart[2] = {
-			{0, 1}, /* Logical drive "0:" -> Payload */
-			{0, 2}  /* Logical drive "1:" -> EPS */
-	};
-}
+static FATFS sd_filesystem;
 
 namespace
 {
@@ -31,24 +21,23 @@ constexpr uint32_t SpaceRequiredForNewFile = TelemetryFileSizeBytes + MinimumFre
 constexpr uint32_t MaximumFileIndex = 9999u;
 
 /*
- * Context structure for a single FatFs volume.
- * Bundles all state variables required to manage files on a specific partition.
- * This allows us to manage multiple drives without duplicating code.
+ * Context structure for one telemetry directory.
+ * Bundles all state needed to manage files inside a single directory on the
+ * shared filesystem. This lets both directories reuse one implementation.
  */
-struct VolumeCtx_t {
-	const char* volume_path;      /* Mount path, e.g., "0:/" or "1:/" */
-	FATFS filesystem;             /* FatFs workspace for this specific volume */
+struct DirectoryCtx_t {
+	const char* directory_path;   /* Directory name, e.g. "PAYLOAD" or "EPS" */
 	FIL active_file;              /* The currently open file object */
 	bool file_is_open;            /* True if active_file is open and ready to write */
 	bool session_initialized;     /* True if we have loaded metadata from SESSION.BIN */
 	uint32_t current_file_index;  /* The index (XXXX) of the currently open TLMXXXX.BIN */
 	uint32_t current_file_bytes;  /* How many bytes are currently written to active_file */
-	SessionMetadata_t session;    /* Metadata for this specific volume */
+	SessionMetadata_t session;    /* Metadata for this specific directory */
 };
 
-/* Instantiate two independent volume contexts for Payload and EPS. */
-VolumeCtx_t vol_payload = { "0:/", {}, {}, false, false, 0u, 0u, {} };
-VolumeCtx_t vol_eps     = { "1:/", {}, {}, false, false, 0u, 0u, {} };
+/* Instantiate two independent directory contexts for Payload and EPS. */
+DirectoryCtx_t dir_payload = { "PAYLOAD", {}, false, false, 0u, 0u, {} };
+DirectoryCtx_t dir_eps     = { "EPS",     {}, false, false, 0u, 0u, {} };
 
 /* Accepts only the exact 8.3 filename TLM0001.BIN through TLM9999.BIN. */
 bool IsTelemetryFilename(const char* name, uint32_t* index)
@@ -87,20 +76,20 @@ bool IsTelemetryFilename(const char* name, uint32_t* index)
 }
 
 /*
- * Builds a telemetry filename WITH the volume path prefix.
- * e.g., If ctx->volume_path is "0:/", it formats as "0:/TLM0001.BIN".
- * Note: size must be at least 16 to accommodate the path prefix.
+ * Builds a telemetry filename WITH the directory prefix.
+ * e.g. If ctx->directory_path is "PAYLOAD", it formats as "PAYLOAD/TLM0001.BIN".
+ * Note: size must be at least 20 to accommodate the directory prefix.
  */
-void MakeTelemetryFilename(VolumeCtx_t* ctx, uint32_t index, char* filename, size_t size)
+void MakeTelemetryFilename(DirectoryCtx_t* ctx, uint32_t index, char* filename, size_t size)
 {
-    std::snprintf(filename, size, "%sTLM%04lu.BIN", ctx->volume_path, static_cast<unsigned long>(index));
+    std::snprintf(filename, size, "%s/TLM%04lu.BIN", ctx->directory_path, static_cast<unsigned long>(index));
 }
 
 /*
- * Finds the oldest and newest telemetry file indexes on a SPECIFIC volume.
- * Requires the context pointer to know which partition to scan.
+ * Finds the oldest and newest telemetry file indexes in ONE directory.
+ * Requires the context pointer to know which directory to scan.
  */
-bool ScanFileIndexes(VolumeCtx_t* ctx, uint32_t* lowest_index, uint32_t* highest_index)
+bool ScanFileIndexes(DirectoryCtx_t* ctx, uint32_t* lowest_index, uint32_t* highest_index)
 {
     if ((lowest_index == nullptr) || (highest_index == nullptr)) {
         return false;
@@ -112,8 +101,8 @@ bool ScanFileIndexes(VolumeCtx_t* ctx, uint32_t* lowest_index, uint32_t* highest
     DIR directory = {};
     FILINFO info = {};
 
-	// Open the directory of the specific volume (Payload or EPS)
-	FRESULT result = f_opendir(&directory, ctx->volume_path);
+	// Open the directory of the specific directory (Payload or EPS)
+	FRESULT result = f_opendir(&directory, ctx->directory_path);
     if (result != FR_OK) {
         return false;
     }
@@ -143,10 +132,10 @@ bool ScanFileIndexes(VolumeCtx_t* ctx, uint32_t* lowest_index, uint32_t* highest
 }
 
 /*
- * Converts FatFs free clusters on a SPECIFIC volume to a byte count.
- * Prevents one full partition from reporting the other as full.
+ * Converts FatFs free clusters to a byte count.
+ * NOTE: free space is card-wide and shared by both directories.
  */
-bool GetFreeBytes(VolumeCtx_t* ctx, uint64_t* free_bytes)
+bool GetFreeBytes(DirectoryCtx_t* ctx, uint64_t* free_bytes)
 {
     if (free_bytes == nullptr) {
         return false;
@@ -155,8 +144,8 @@ bool GetFreeBytes(VolumeCtx_t* ctx, uint64_t* free_bytes)
     DWORD free_clusters = 0u;
     FATFS* filesystem = nullptr;
 
-	// Check free space exclusively on the requested volume
-	if (f_getfree(ctx->volume_path, &free_clusters, &filesystem) != FR_OK) {
+	// Free space is reported for the whole filesystem, not per directory
+	if (f_getfree("", &free_clusters, &filesystem) != FR_OK) {
 		return false;
 	}
 
@@ -168,10 +157,10 @@ bool GetFreeBytes(VolumeCtx_t* ctx, uint64_t* free_bytes)
 }
 
 /*
- * Deletes the oldest closed telemetry files on THIS volume until space is freed.
- * Operates strictly within the isolated partition context.
+ * Deletes the oldest closed telemetry files in THIS directory until space is freed.
+ * Note both directories draw on the same shared free space.
  */
-bool EnsureSpaceForNewFile(VolumeCtx_t* ctx)
+bool EnsureSpaceForNewFile(DirectoryCtx_t* ctx)
 {
     for (;;) {
         uint64_t free_bytes = 0u;
@@ -204,15 +193,15 @@ bool EnsureSpaceForNewFile(VolumeCtx_t* ctx)
 }
 
 /*
- * Loads saved metadata from the volume's unique SESSION.BIN to determine next index.
+ * Loads saved metadata from the directory's unique SESSION.BIN to determine next index.
  */
-bool InitializeSession(VolumeCtx_t* ctx)
+bool InitializeSession(DirectoryCtx_t* ctx)
 {
     SessionMetadata_t loaded = {};
     bool loaded_valid = false;
 
-    // Pass the volume path so SessionStore knows which file to load
-	if (!SessionStore_Load(ctx->volume_path, &loaded, &loaded_valid)) {
+    // Pass the directory path so SessionStore knows which file to load
+	if (!SessionStore_Load(ctx->directory_path, &loaded, &loaded_valid)) {
 		return false;
 	}
 
@@ -223,7 +212,7 @@ bool InitializeSession(VolumeCtx_t* ctx)
     }
     (void)lowest_index;
 
-	// Apply metadata to this specific volume's context
+	// Apply metadata to this specific directory's context
 	if (loaded_valid) {
 		ctx->session = loaded;
 		ctx->session.session_id = loaded.session_id + 1u;
@@ -252,9 +241,9 @@ bool InitializeSession(VolumeCtx_t* ctx)
 }
 
 /*
- * Re-scans file indexes on this specific volume.
+ * Re-scans file indexes on this specific directory.
  */
-bool RefreshNextFileIndex(VolumeCtx_t* ctx)
+bool RefreshNextFileIndex(DirectoryCtx_t* ctx)
 {
     uint32_t lowest_index = 0u;
     uint32_t highest_index = 0u;
@@ -272,9 +261,9 @@ bool RefreshNextFileIndex(VolumeCtx_t* ctx)
 }
 
 /*
- * Closes the previous file on this volume and creates the next one.
+ * Closes the previous file on this directory and creates the next one.
  */
-bool OpenNewTelemetryFile(VolumeCtx_t* ctx)
+bool OpenNewTelemetryFile(DirectoryCtx_t* ctx)
 {
 	if (ctx->file_is_open) {
 		const FRESULT close_result = f_close(&ctx->active_file);
@@ -295,8 +284,8 @@ bool OpenNewTelemetryFile(VolumeCtx_t* ctx)
 
 	const uint32_t new_index = ctx->session.next_file_index;
 
-	// Buffer size 16 to fit volume prefix
-	char filename[16] = {};
+	// Buffer size 32 to fit directory prefix
+	char filename[32] = {};
 	MakeTelemetryFilename(ctx, new_index, filename, sizeof(filename));
 
 	if (f_open(&ctx->active_file, filename, FA_CREATE_NEW | FA_WRITE) != FR_OK) {
@@ -309,8 +298,8 @@ bool OpenNewTelemetryFile(VolumeCtx_t* ctx)
 	ctx->session.active_file_index = new_index;
 	ctx->session.next_file_index = new_index + 1u;
 
-	// Save the metadata to this specific volume's SESSION.BIN
-	if (!SessionStore_Save(ctx->volume_path, &ctx->session)) {
+	// Save the metadata to this specific directory's SESSION.BIN
+	if (!SessionStore_Save(ctx->directory_path, &ctx->session)) {
 		(void)f_close(&ctx->active_file);
 		ctx->file_is_open = false;
 		ctx->current_file_index = 0u;
@@ -323,15 +312,11 @@ bool OpenNewTelemetryFile(VolumeCtx_t* ctx)
 }
 
 /*
- * Internal helper: mounts a single FatFs partition, loads its independent
+ * Internal helper: prepares one directory, loads its independent
  * metadata, and opens its current telemetry file.
  */
-static bool ConnectVolume(VolumeCtx_t* ctx)
+static bool ConnectDirectory(DirectoryCtx_t* ctx)
 {
-	if (f_mount(&ctx->filesystem, ctx->volume_path, 1u) != FR_OK) {
-		return false;
-	}
-
 	if (ctx->session_initialized) {
 		if (!RefreshNextFileIndex(ctx)) {
 			return false;
@@ -344,9 +329,9 @@ static bool ConnectVolume(VolumeCtx_t* ctx)
 }
 
 /*
- * Internal helper: safely closes open files and unmounts a single partition.
+ * Internal helper: safely closes open files for a single directory.
  */
-static void DisconnectVolume(VolumeCtx_t* ctx)
+static void DisconnectDirectory(DirectoryCtx_t* ctx)
 {
 	if (ctx->file_is_open) {
 		(void)f_close(&ctx->active_file);
@@ -355,38 +340,53 @@ static void DisconnectVolume(VolumeCtx_t* ctx)
 	ctx->file_is_open = false;
 	ctx->current_file_index = 0u;
 	ctx->current_file_bytes = 0u;
-
-	// Passing nullptr unmounts the volume in FatFs
-	(void)f_mount(nullptr, ctx->volume_path, 0u);
 }
 
-/*
- * Mounts both the Payload (0:/) and EPS (1:/) logical volumes.
- * Returns true only if both partitions successfully mount and prepare files.
- */
 bool TelemetryFileStore_Connect(void)
 {
-	bool payload_ok = ConnectVolume(&vol_payload);
-	bool eps_ok = ConnectVolume(&vol_eps);
+    // Mount the entire SD card once
+    if (f_mount(&sd_filesystem, "", 1u) != FR_OK) {
+        return false;
+    }
 
-	return (payload_ok && eps_ok);
+    // Create the directories
+    // FR_EXIST means "it's already there", which is OK
+    FRESULT r_payload = f_mkdir("PAYLOAD");
+    if (r_payload != FR_OK && r_payload != FR_EXIST) {
+        return false;
+    }
+
+    FRESULT r_eps = f_mkdir("EPS");
+    if (r_eps != FR_OK && r_eps != FR_EXIST) {
+        return false;
+    }
+
+    // Connect the contexts (this will load metadata and open files inside the directories)
+    bool payload_ok = ConnectDirectory(&dir_payload);
+    bool eps_ok = ConnectDirectory(&dir_eps);
+
+    return (payload_ok && eps_ok);
 }
 
 /*
- * Tears down both volumes completely (called on error).
+ * Tears down both directories completely (called on error).
  */
 void TelemetryFileStore_Disconnect(void)
 {
-	DisconnectVolume(&vol_payload);
-	DisconnectVolume(&vol_eps);
+	DisconnectDirectory(&dir_payload);
+	DisconnectDirectory(&dir_eps);
+
+    // Unmount the single file system
+    (void)f_mount(nullptr, "", 0u);
 }
 
+
 /*
- * Routing table structure maps a logical Node ID to its physical volume context.
+ * Routing table structure maps a logical Node ID to its directory context.
  */
 struct RouteEntry_t {
     uint8_t node_id;
-    VolumeCtx_t* target_volume;
+    DirectoryCtx_t* target_directory;
 };
 
 /*
@@ -395,16 +395,16 @@ struct RouteEntry_t {
  * The routing logic itself is closed for modification.
  */
 static const RouteEntry_t RoutingTable[] = {
-    { 0x02u, &vol_payload }, /* PAYLOAD_NODE_ID */
-    { 0x03u, &vol_eps }      /* EPS_NODE_ID */
+    { 0x02u, &dir_payload }, /* PAYLOAD_NODE_ID */
+    { 0x03u, &dir_eps }      /* EPS_NODE_ID */
 };
 
 /*
- * Internal helper: Resolves the target volume context based on the sensor_id.
+ * Internal helper: Resolves the target directory context based on the sensor_id.
  * Extracts the Node ID from the high byte of the 16-bit sensor_id (defined in log_record.h).
  * Returns nullptr if the node is unknown.
  */
-static VolumeCtx_t* RouteRecord(uint16_t sensor_id)
+static DirectoryCtx_t* RouteRecord(uint16_t sensor_id)
 {
     // Extract the Node ID (top 8 bits) from the sensor_id
     const uint8_t node_id = static_cast<uint8_t>(sensor_id >> 8u);
@@ -412,7 +412,7 @@ static VolumeCtx_t* RouteRecord(uint16_t sensor_id)
 
     for (size_t i = 0u; i < table_size; ++i) {
         if (RoutingTable[i].node_id == node_id) {
-            return RoutingTable[i].target_volume;
+            return RoutingTable[i].target_directory;
         }
     }
     // Unknown source, discard securely
@@ -427,12 +427,12 @@ extern UART_HandleTypeDef huart2;
 
 /*
  * Writes a mixed batch of records to the SD card.
- * Routes each record to its appropriate volume based on its source node.
+ * Routes each record to its appropriate directory based on its source node.
  * Rotates files automatically when the 1 MiB limit is reached.
  */
 bool TelemetryFileStore_Write(const LogRecord_t* records, uint32_t record_count)
 {
-    // 1. Safety checks: null pointer, empty batch, or batch too large
+    // Safety checks: null pointer, empty batch, or batch too large
     if ((records == nullptr) || (record_count == 0u) || (record_count > LOG_RECORDS_PER_SECTOR)) {
         return false;
     }
@@ -441,13 +441,13 @@ bool TelemetryFileStore_Write(const LogRecord_t* records, uint32_t record_count)
     bool payload_written = false;
     bool overall_success = true;
 
-    // 2. Process the mixed batch record by record
+    // Process the mixed batch record by record
     for (uint32_t i = 0u; i < record_count; ++i) {
 
-        // RouteRecord examines the top 8 bits to resolve the target volume (Payload or EPS)
-        VolumeCtx_t* ctx = RouteRecord(records[i].sensor_id);
+        // RouteRecord examines the top 8 bits to resolve the target directory (Payload or EPS)
+    	DirectoryCtx_t* ctx = RouteRecord(records[i].sensor_id);
 
-        // 3. Handle unknown sources: Alert via UART and skip the record
+        // Handle unknown sources: Alert via UART and skip the record
         if (ctx == nullptr) {
             char warn_msg[64] = {};
             // Format the warning string into the RAM buffer
@@ -462,12 +462,12 @@ bool TelemetryFileStore_Write(const LogRecord_t* records, uint32_t record_count)
             continue; // Skip writing this unknown record
         }
 
-        // 4. Check if the target volume is offline/disconnected
+        // Check if the target directory is offline/disconnected
         if (!ctx->file_is_open) {
             continue;
         }
 
-        // 5. File size management (Rotation)
+        // File size management (Rotation)
         // Check if adding this 16-byte record will exceed the 1 MiB limit
         if ((ctx->current_file_bytes + sizeof(LogRecord_t)) > TelemetryFileSizeBytes) {
             if (!OpenNewTelemetryFile(ctx)) {
@@ -476,17 +476,17 @@ bool TelemetryFileStore_Write(const LogRecord_t* records, uint32_t record_count)
             }
         }
 
-        // 6. Write exactly one record to the FatFs RAM buffer
+        // Write exactly one record to the FatFs RAM buffer
         UINT bytes_written = 0u;
         FRESULT result = f_write(&ctx->active_file, &records[i], sizeof(LogRecord_t), &bytes_written);
 
         if ((result == FR_OK) && (bytes_written == sizeof(LogRecord_t))) {
             ctx->current_file_bytes += sizeof(LogRecord_t);
 
-            // Flag which volume actually received data so we can selectively sync later
-            if (ctx == &vol_eps) {
+            // Flag which directory actually received data so we can selectively sync later
+            if (ctx == &dir_eps) {
                 eps_written = true;
-            } else if (ctx == &vol_payload) {
+            } else if (ctx == &dir_payload) {
                 payload_written = true;
             }
         } else {
@@ -494,16 +494,16 @@ bool TelemetryFileStore_Write(const LogRecord_t* records, uint32_t record_count)
         }
     }
 
-    // 7. Commit changes to physical SD Card
-    // Synchronize and save session metadata ONLY for touched volumes.
+    // Commit changes to physical SD Card
+    // Synchronize and save session metadata ONLY for touched directories.
     // This minimizes blocking time and SD card wear.
     if (eps_written) {
-        (void)f_sync(&vol_eps.active_file);
-        (void)SessionStore_Save(vol_eps.volume_path, &vol_eps.session);
+        (void)f_sync(&dir_eps.active_file);
+        (void)SessionStore_Save(dir_eps.directory_path, &dir_eps.session);
     }
     if (payload_written) {
-        (void)f_sync(&vol_payload.active_file);
-        (void)SessionStore_Save(vol_payload.volume_path, &vol_payload.session);
+        (void)f_sync(&dir_payload.active_file);
+        (void)SessionStore_Save(dir_payload.directory_path, &dir_payload.session);
     }
 
     return overall_success;

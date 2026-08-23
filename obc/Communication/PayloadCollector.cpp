@@ -1,6 +1,6 @@
 #include "PayloadCollector.hpp"
 #include "I2CMaster.hpp"
-#include "../../common/i2c/protocol.h" // PayloadData_t and PAYLOAD_NODE_ID
+#include "../../common/i2c/protocol.h" // SnapshotData_t and PAYLOAD_NODE_ID
 #include "../../common/log_record.h" // LogRecord_t definition
 #include "../../common/i2c/bus_config.h" // PAYLOAD_I2C_ADDRESS_HAL
 #include "../../common/crc32.h" // CRC functions
@@ -171,7 +171,7 @@ static uint8_t BatteryVoltageToPercent(float voltage)
 
 /*  */
 static void ApplyToSnapshot(const KeySpec& spec, const VtValueWire_t& wire,
-                            PayloadData_t* snapshot)
+                            SnapshotData_t* snapshot)
 {
     switch (spec.snapshot_field) {
         case SnapshotField::Temperature:
@@ -223,7 +223,7 @@ static void QueueValue(const NodeState& node, const KeySpec& spec,const VtValueW
 }
 
 /*fill the snapshot with data */
-static void PublishSnapshot(const NodeState& node, const PayloadData_t& data,
+static void PublishSnapshot(const NodeState& node, const SnapshotData_t& data,
                             uint32_t now)
 {
     if (osMutexAcquire(s_snapshot_mtx, 10u) == osOK) {
@@ -244,7 +244,7 @@ static void collect_from_node(NodeState& node)
         ? static_cast<uint8_t>(sizeof(PAYLOAD_KEYS) / sizeof(PAYLOAD_KEYS[0]))
         : static_cast<uint8_t>(sizeof(EPS_KEYS) / sizeof(EPS_KEYS[0]));
 
-    PayloadData_t snapshot_data = {};
+    SnapshotData_t snapshot_data = {};
     snapshot_data.timestamp_ms = osKernelGetTickCount();
     snapshot_data.node_id = node.node_id;
 
@@ -304,7 +304,7 @@ static void collect_from_node(NodeState& node)
     if (received_value) {
     	//check crc
         snapshot_data.crc32 = Protocol_Crc32(
-            reinterpret_cast<const uint8_t*>(&snapshot_data), PAYLOAD_DATA_CRC_SIZE);
+        		reinterpret_cast<const uint8_t*>(&snapshot_data), SNAPSHOT_DATA_CRC_SIZE);
         //publish it inside snapshot for later use
         PublishSnapshot(node, snapshot_data, snapshot_data.timestamp_ms);
     }

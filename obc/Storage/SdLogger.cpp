@@ -7,14 +7,16 @@
 
 #include "../../common/crc32.h"
 #include "../../common/log_record.h"
+#include "rtc.h"
 
+#include <cstring>
 #include <cstdint>
 
 // the queue from where we will get our records
 extern "C" osMessageQueueId_t q_telemetryHandle;
 
-namespace
-{
+namespace {
+
 // max records in buffer and in queue
 constexpr uint32_t FlushTimeoutTicks = 2000u;
 constexpr uint32_t RetryDelayTicks = 5000u;
@@ -55,6 +57,27 @@ void GoOffline(uint32_t now)
     SetLoggerError();
 }
 
+/* Writes one boot marker so the ground station can see reboot gaps in the
+ * telemetry stream. It goes through TelemetryFileStore_Write like any other
+ * record, so the decoder needs no special case. Routed to the EPS directory
+ * because a reboot is a housekeeping event, not payload data. */
+void WriteBootMarker(void)
+{
+    LogRecord_t record = {};
+
+    const uint32_t boot_count = RTC_get_boot_count();
+
+    record.epoch_s = RTC_get_epoch();
+    record.sensor_id = SENSOR_ID_BOOT;
+    record.type = LOG_RECORD_TYPE_BOOT;
+    record.len = sizeof(boot_count);
+    std::memcpy(record.value, &boot_count, sizeof(boot_count));
+    record.crc32 = Protocol_Crc32(
+        reinterpret_cast<const uint8_t*>(&record), LOG_RECORD_CRC_SIZE);
+
+    (void)TelemetryFileStore_Write(&record, 1u);
+}
+
 /* Attempts to mount the card, recover session state, and open a new file. */
 bool TryBringOnline(uint32_t now)
 {
@@ -65,6 +88,10 @@ bool TryBringOnline(uint32_t now)
     }
 
     logger_state = SD_LOGGER_READY;
+
+    // Record the reboot only after storage is confirmed writable.
+    WriteBootMarker();
+
     return true;
 }
 
