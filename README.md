@@ -25,4 +25,49 @@ Receives and creates UART frames.
 Checks frame start, length and CRC.
 Sends command responses and debug messages.
 
+## CubeMX regeneration ritual (OBC)
+
+Regenerate only at the agreed sync, with both developers present, and commit the
+result on its own with a message like `cubemx: regen (added RTC)`.
+
+CubeMX always writes FatFs into `obc/FATFS/` and `obc/Middlewares/Third_Party/FatFs/`,
+but this project keeps its FatFs stack under `obc/Storage/`. Every regeneration
+therefore creates a duplicate tree that has to be removed by hand. Follow these
+steps in order after every Generate Code.
+
+1. Copy the regenerated FatFs configuration across, before deleting anything:
+
+       cp obc/FATFS/Target/ffconf.h obc/Storage/FATFS/Target/ffconf.h
+
+   This step is easy to miss and fails silently. `ffconf.h` is the only place a
+   FATFS setting changed in CubeMX (`_VOLUMES`, `_MULTI_PARTITION`, ...) actually
+   lands, and it lands in the root tree that step 2 deletes. Skip this and the
+   build keeps using the old settings with no error anywhere.
+
+2. Delete the duplicate trees `obc/FATFS/` and `obc/Middlewares/Third_Party/FatFs/`.
+   Keep `obc/Middlewares/Third_Party/FreeRTOS/` - that one is used.
+
+3. In `obc/.cproject`, remove the include paths `../FATFS/Target`, `../FATFS/App`
+   and `../Middlewares/Third_Party/FatFs/src` from every configuration block, and
+   remove the `FATFS` sourcePath entry if the IDE has not already dropped it.
+
+4. Delete `obc/Debug/` and run Project > Clean. The generated makefiles still
+   reference the files removed in step 2.
+
+5. Run the layout guard and do not continue until it is green:
+
+       bash obc/check_fatfs_layout.sh
+
+6. Flash and confirm `SD write OK` over UART before starting any other work.
+
+The guard in step 5 checks the things a regeneration has silently broken before:
+the duplicate FatFs tree, the `user_diskio.c` SPI wiring being replaced by a stub,
+SPI1 `DataSize`/`BaudRatePrescaler` reverting to HAL defaults, `BSP_LED_Init`
+reappearing on PA5 (which is also SPI1_SCK), the RTOS entry point losing its call
+to `ObcController_Process()`, and `ffconf.h` drifting out of sync with `obc.ioc`.
+
+Phase 4 PC simulators:
+- `python payload_sim.py` drives Payload `TEMP`, `TDOSE`, `SEL`, and `NRESET` values.
+- `python eps_sim.py` drives EPS battery, temperature, and solar-panel values.
+- Both run without hardware in dry-run mode; see `simulators/README.md` for options.
 

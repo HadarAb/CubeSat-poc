@@ -25,7 +25,8 @@
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include "I2CSlave.hpp"
-#include "PayloadSim.hpp"
+#include "PayloadUart.hpp"
+#include "../../common/vtable/vtable.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -94,7 +95,8 @@ int main(void)
   MX_USART2_UART_Init();
 
   /* USER CODE BEGIN 2 */
-  PayloadSim_Init();
+  VTable_Init();
+  PayloadUart_Init();
 
   if (I2CSlave_Init(&hi2c1) != HAL_OK)
   {
@@ -112,7 +114,7 @@ int main(void)
   /* USER CODE BEGIN WHILE */
   while (1)
   {
-    PayloadSim_Tick();
+    PayloadUart_Process();
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */

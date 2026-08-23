@@ -21,6 +21,7 @@
 #include "cmsis_os.h"
 #include "fatfs.h"
 #include "i2c.h"
+#include "rtc.h"
 #include "spi.h"
 #include "usart.h"
 #include "gpio.h"
@@ -29,7 +30,6 @@
 /* USER CODE BEGIN Includes */
 
 #include "ObcController.hpp"
-#include "SdCard.hpp"
 
 /* USER CODE END Includes */
 
@@ -44,7 +44,6 @@
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
-
 /* USER CODE BEGIN PM */
 
 /* USER CODE END PM */
@@ -76,6 +75,9 @@ int main(void)
 
   /* USER CODE BEGIN 1 */
 
+	// save hardware reset flags (RCC->CSR) to know why the board rebooted, before clearing them
+	uint32_t reset_flags_snapshot = RCC->CSR;
+
   /* USER CODE END 1 */
 
   /* MCU Configuration--------------------------------------------------------*/
@@ -99,22 +101,25 @@ int main(void)
   MX_I2C1_Init();
   MX_USART2_UART_Init();
   MX_FATFS_Init();
+  MX_RTC_Init();
   MX_SPI1_Init();
   /* USER CODE BEGIN 2 */
+
+  // save the reset flags to DR3(Data Register) and clear them from hardware
+  HAL_RTCEx_BKUPWrite(&hrtc, RTC_BKP_DR3, reset_flags_snapshot);
+  __HAL_RCC_CLEAR_RESET_FLAGS();
+
+  // increment the boot counter in DR1
+  uint32_t current_boot_count = HAL_RTCEx_BKUPRead(&hrtc, RTC_BKP_DR1);
+  HAL_RTCEx_BKUPWrite(&hrtc, RTC_BKP_DR1, current_boot_count + 1);
+
   ObcController_Init(&hi2c1);
-  SdCard_RunStartupTest();
+
   /* USER CODE END 2 */
 
   /* Init scheduler */
   osKernelInitialize();  /* Call init function for freertos objects (in cmsis_os2.c) */
   MX_FREERTOS_Init();
-
-  /* NOTE: Do NOT call BSP_LED_Init(LED_GREEN) on the OBC.
-     LD2 is PA5, which is also SPI1_SCK. BSP_LED_Init reconfigures PA5 as a plain
-     GPIO output and severs the SD card's clock line -- f_mount keeps working while
-     every later SD access dies, which looks like intermittent hardware failure.
-     OBC status is reported over UART instead. CubeMX re-adds this block on every
-     regeneration; check_fatfs_layout.sh catches it. */
 
   /* Start scheduler */
   osKernelStart();
@@ -152,9 +157,10 @@ void SystemClock_Config(void)
   /** Initializes the RCC Oscillators according to the specified parameters
   * in the RCC_OscInitTypeDef structure.
   */
-  RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSI;
+  RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSI|RCC_OSCILLATORTYPE_LSI;
   RCC_OscInitStruct.HSIState = RCC_HSI_ON;
   RCC_OscInitStruct.HSICalibrationValue = RCC_HSICALIBRATION_DEFAULT;
+  RCC_OscInitStruct.LSIState = RCC_LSI_ON;
   RCC_OscInitStruct.PLL.PLLState = RCC_PLL_ON;
   RCC_OscInitStruct.PLL.PLLSource = RCC_PLLSOURCE_HSI;
   RCC_OscInitStruct.PLL.PLLM = 1;
