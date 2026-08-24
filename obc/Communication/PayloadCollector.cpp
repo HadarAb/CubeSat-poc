@@ -1,5 +1,6 @@
 #include "PayloadCollector.hpp"
 #include "I2CMaster.hpp"
+#include "ScheduleApi.hpp"
 #include "../../common/i2c/protocol.h" // PayloadData_t and PAYLOAD_NODE_ID
 #include "../../common/log_record.h" // LogRecord_t definition
 #include "../../common/i2c/bus_config.h" // PAYLOAD_I2C_ADDRESS_HAL
@@ -13,8 +14,18 @@
 #include <stdbool.h>
 
 
-// Calculates exact ticks for 500ms based on the OS frequency, avoiding hardcoded values.
-static const uint32_t COLLECT_PERIOD_TICKS = 500U * osKernelGetTickFreq() / 1000U;
+static const uint32_t SCHEDULE_CHECK_PERIOD_MS = 10u;
+static const uint32_t LEGACY_COLLECT_PERIOD_MS = 500u;
+
+/*
+ * Dev 1 owns these functions. Weak references preserve the old 500 ms polling
+ * behavior until the real state and schedule implementation is merged.
+ */
+#if defined(__GNUC__)
+extern "C" SatState_t PowerState_Get(void) __attribute__((weak));
+extern "C" void Schedule_Init(void) __attribute__((weak));
+extern "C" bool Schedule_TryTakeDue(ScheduleItemId_t item, SatState_t state, uint32_t now_ticks) __attribute__((weak));
+#endif
 
 extern osMessageQueueId_t q_telemetryHandle; // from freertos.c the queue
 extern osMutexId_t i2c_mtxHandle; // shared I2C bus mutex
@@ -95,7 +106,7 @@ bool PayloadCollector_GetStatus(PayloadCollectorStatus_t* out)
     return out->valid;
 }
 
-/* Publishes one coherent status snapshot after both nodes have been polled. */
+/* Publishes one coherent copy of the latest collector and node health. */
 static void PublishCollectorStatus()
 {
     if (osMutexAcquire(s_snapshot_mtx, 10u) != osOK)
@@ -138,26 +149,29 @@ enum class SnapshotField : uint8_t
     StoredOnly
 };
 
-struct KeySpec
+//struct for the task that collects seonsors data
+struct ScheduledSensor
 {
-    const char* name;
+    ScheduleItemId_t schedule_item;
+    uint8_t node_id;
+    const char* key;
     VtType_t expected_type;
     SnapshotField snapshot_field;
 };
 
-/* Four fixed demo reads per node. Add more EPS panel keys here when needed. */
-static const KeySpec PAYLOAD_KEYS[] = {
-    {"TEMP",   VT_TYPE_F32, SnapshotField::Temperature},
-    {"TDOSE",  VT_TYPE_F32, SnapshotField::TotalDose},
-    {"SEL",    VT_TYPE_U32, SnapshotField::SelCount},
-    {"NRESET", VT_TYPE_U32, SnapshotField::ResetCount},
-};
-
-static const KeySpec EPS_KEYS[] = {
-    {"VBAT",  VT_TYPE_F32, SnapshotField::BatteryVoltage},
-    {"TEMP",  VT_TYPE_F32, SnapshotField::Temperature},
-    {"SP0_T", VT_TYPE_F32, SnapshotField::StoredOnly},
-    {"SP0_I", VT_TYPE_F32, SnapshotField::StoredOnly},
+/*
+ * This fixed table tells the collector where every known sensor lives, how to
+ * read it, which schedule item controls it, and where its latest value belongs.
+ */
+static const ScheduledSensor SENSORS[] = {
+    {SCHEDULE_ITEM_PAYLOAD_TEMP, PAYLOAD_NODE_ID, "TEMP", VT_TYPE_F32, SnapshotField::Temperature},
+    {SCHEDULE_ITEM_PAYLOAD_TDOSE, PAYLOAD_NODE_ID, "TDOSE", VT_TYPE_F32, SnapshotField::TotalDose},
+    {SCHEDULE_ITEM_PAYLOAD_SEL, PAYLOAD_NODE_ID, "SEL", VT_TYPE_U32, SnapshotField::SelCount},
+    {SCHEDULE_ITEM_PAYLOAD_NRESET, PAYLOAD_NODE_ID, "NRESET", VT_TYPE_U32, SnapshotField::ResetCount},
+    {SCHEDULE_ITEM_EPS_VBAT, EPS_NODE_ID, "VBAT", VT_TYPE_F32, SnapshotField::BatteryVoltage},
+    {SCHEDULE_ITEM_EPS_TEMP, EPS_NODE_ID, "TEMP", VT_TYPE_F32, SnapshotField::Temperature},
+    {SCHEDULE_ITEM_EPS_SP0_TEMP, EPS_NODE_ID, "SP0_T", VT_TYPE_F32, SnapshotField::StoredOnly},
+    {SCHEDULE_ITEM_EPS_SP0_CURRENT, EPS_NODE_ID, "SP0_I", VT_TYPE_F32, SnapshotField::StoredOnly},
 };
 
 static float DecodeF32(const VtValueWire_t& wire)
@@ -221,10 +235,9 @@ static uint8_t BatteryVoltageToPercent(float voltage)
  * spec what value it is and where to save it
  * wire the value it self in numbers
  * snapshot is the cashed space where we will save the data  */
-static void ApplyToSnapshot(const KeySpec& spec, const VtValueWire_t& wire,
-                            PayloadData_t* snapshot)
+static void ApplyToSnapshot(const ScheduledSensor& sensor, const VtValueWire_t& wire, PayloadData_t* snapshot)
 {
-    switch (spec.snapshot_field) {
+    switch (sensor.snapshot_field) {
         case SnapshotField::Temperature:
             snapshot->temperature_c_x10 = ToTenths(DecodeF32(wire));
             break;
@@ -252,13 +265,13 @@ static void ApplyToSnapshot(const KeySpec& spec, const VtValueWire_t& wire,
 }
 
 /* grabing data from node into a record to later store it on the sd */
-static void QueueValue(const NodeState& node, const KeySpec& spec,const VtValueWire_t& wire)
+static void QueueValue(const ScheduledSensor& sensor, const VtValueWire_t& wire)
 {
     LogRecord_t record = {};
     record.epoch_s = RTC_get_epoch();
 
-    const uint16_t node_part = static_cast<uint16_t>(static_cast<uint16_t>(node.node_id) << 8u);
-    const uint16_t key_part = static_cast<uint16_t>(VTable_HashName(spec.name) & 0x00FFu);
+    const uint16_t node_part = static_cast<uint16_t>(static_cast<uint16_t>(sensor.node_id) << 8u);
+    const uint16_t key_part = static_cast<uint16_t>(VTable_HashName(sensor.key) & 0x00FFu);
 
     record.sensor_id = static_cast<uint16_t>(node_part | key_part);
     record.type = LOG_RECORD_TYPE_TELEMETRY;
@@ -273,105 +286,157 @@ static void QueueValue(const NodeState& node, const KeySpec& spec,const VtValueW
     }
 }
 
-/*fill the snapshot with data */
-static void PublishSnapshot(const NodeState& node, const PayloadData_t& data,
-                            uint32_t now)
+/* Return the runtime state object for one logical node. */
+static NodeState* FindNode(uint8_t node_id)
 {
-    if (osMutexAcquire(s_snapshot_mtx, 10u) == osOK) {
-        Snapshot& snapshot = s_snapshot[index_of(node.node_id)];
-        snapshot.data = data;
-        snapshot.obc_time_ms = now;
-        snapshot.valid = true;
-        osMutexRelease(s_snapshot_mtx);
+    for (NodeState& node : s_nodes)
+    {
+        if (node.node_id == node_id)
+        {
+            return &node;
+        }
+    }
+
+    return nullptr;
+}
+
+/* Record a successful reply from a node, even when its value is unusable. */
+static void MarkNodeResponded(NodeState& node)
+{
+    node.consecutive_errors = 0u;
+    node.online = true;
+}
+
+/* Mark a node offline only after three consecutive bus-level failures. */
+static void MarkNodeBusError(NodeState& node)
+{
+    ++node.err_count;
+    ++node.consecutive_errors;
+
+    if (node.consecutive_errors >= 3u)
+    {
+        node.online = false;
     }
 }
 
-/* collects data from the nodes and puts it in snapshots and in queue
- * a long part here is inside the mutex */
-static void collect_from_node(NodeState& node)
+/*
+ * Update only the newly read field in the existing snapshot. Other sensor
+ * values stay untouched, so sensors with different periods accumulate safely.
+ */
+static void UpdateSnapshot(const ScheduledSensor& sensor,
+							const VtValueWire_t& wire, uint32_t now_ticks)
 {
-	const KeySpec* keys = nullptr;
-	uint8_t key_count = 0;
-
-	if (node.node_id == PAYLOAD_NODE_ID)
-	{
-	    keys = PAYLOAD_KEYS;
-	    key_count = static_cast<uint8_t>(sizeof(PAYLOAD_KEYS) / sizeof(PAYLOAD_KEYS[0]));
-	}
-	else
-	{
-	    keys = EPS_KEYS;
-	    key_count = static_cast<uint8_t>(sizeof(EPS_KEYS) / sizeof(EPS_KEYS[0]));
-	}
-
-    PayloadData_t snapshot_data = {};
-    snapshot_data.timestamp_ms = osKernelGetTickCount();
-    snapshot_data.node_id = node.node_id;
-
-    bool node_responded = false;
-    bool received_value = false;
-
-    if ((i2c_mtxHandle == nullptr) || (osMutexAcquire(i2c_mtxHandle, osWaitForever) != osOK)) {
-        ++node.err_count;
+    if ((sensor.snapshot_field == SnapshotField::ResetCount)
+    		|| (sensor.snapshot_field == SnapshotField::StoredOnly))
+    {
+        // These keys are stored on SD, but the legacy live payload has no field for them.
         return;
     }
 
-    for (uint8_t index = 0u; index < key_count; ++index) {
-        VtValueWire_t wire = {};
-        //request from one of the nodes for data by index and name
-        const I2CKeyReadResult_t result =
-        		I2CMaster_ReadKey(node.addr, keys[index].name, keys[index].expected_type, &wire);
-
-        if (result == I2C_KEY_READ_BUS_ERROR) {
-            ++node.err_count;
-            break;
-        }
-
-        node_responded = true;
-        if (result == I2C_KEY_READ_CRC_ERROR) {
-            ++node.crc_fail;
-            continue;
-        }
-        if (result == I2C_KEY_READ_FORMAT_ERROR) {
-            ++node.err_count;
-            continue;
-        }
-        if (result == I2C_KEY_READ_MISSING) {
-            continue;
-        }
-
-        received_value = true;
-        //puts data in local snapshot before publishing
-        ApplyToSnapshot(keys[index], wire, &snapshot_data);
-        //put the data inside the queue
-        QueueValue(node, keys[index], wire);
-    }
-    //a long mutex long for all i2c calls
-    osMutexRelease(i2c_mtxHandle);
-
-    if (node_responded) {
-        node.consecutive_errors = 0u;
-        node.online = true;
-    } else {
-        ++node.consecutive_errors;
-        if (node.consecutive_errors >= 3u) {
-            node.online = false;
-        }
+    if (osMutexAcquire(s_snapshot_mtx, 10u) != osOK)
+    {
+        return;
     }
 
-    //did we recive any thing good
-    if (received_value) {
-    	//check crc
-        snapshot_data.crc32 = Protocol_Crc32(
-            reinterpret_cast<const uint8_t*>(&snapshot_data), PAYLOAD_DATA_CRC_SIZE);
-        //publish it inside snapshot for later use
-        PublishSnapshot(node, snapshot_data, snapshot_data.timestamp_ms);
+    Snapshot& snapshot = s_snapshot[index_of(sensor.node_id)];
+
+    // This is initialization only later updates preserve all other fields.
+    if (!snapshot.valid)
+    {
+        memset(&snapshot.data, 0, sizeof(snapshot.data));
+        snapshot.data.node_id = sensor.node_id;
     }
+
+    ApplyToSnapshot(sensor, wire, &snapshot.data);
+
+    if (sensor.snapshot_field == SnapshotField::BatteryVoltage)
+    {
+        snapshot.battery_valid = true;
+    }
+
+    snapshot.data.timestamp_ms = now_ticks;
+    snapshot.data.crc32 = Protocol_Crc32(reinterpret_cast<const uint8_t*>(&snapshot.data),
+    									 PAYLOAD_DATA_CRC_SIZE);
+    snapshot.obc_time_ms = now_ticks;
+    snapshot.valid = true;
+
+    osMutexRelease(s_snapshot_mtx);
 }
 
+/* Read one due sensor, queue its record, and update its existing snapshot field. */
+static void ReadScheduledSensor(const ScheduledSensor& sensor)
+{
+    NodeState* node = FindNode(sensor.node_id);
+
+    if (node == nullptr)
+    {
+        return;
+    }
+
+    if ((i2c_mtxHandle == nullptr) || (osMutexAcquire(i2c_mtxHandle, osWaitForever) != osOK))
+    {
+        ++node->err_count;
+        return;
+    }
+
+    VtValueWire_t wire = {};
+    const I2CKeyReadResult_t result =
+    		I2CMaster_ReadKey(node->addr, sensor.key, sensor.expected_type, &wire);
+    osMutexRelease(i2c_mtxHandle);
+
+    if (result == I2C_KEY_READ_BUS_ERROR)
+    {
+        MarkNodeBusError(*node);
+        return;
+    }
+
+    // CRC, format, and missing key replies still prove that the node answered.
+    MarkNodeResponded(*node);
+
+    if (result == I2C_KEY_READ_CRC_ERROR)
+    {
+        ++node->crc_fail;
+        return;
+    }
+
+    if (result == I2C_KEY_READ_FORMAT_ERROR)
+    {
+        ++node->err_count;
+        return;
+    }
+
+    if (result == I2C_KEY_READ_MISSING)
+    {
+        return;
+    }
+
+    // Storage failure never blocks the live snapshot update.
+    QueueValue(sensor, wire);
+    UpdateSnapshot(sensor, wire, osKernelGetTickCount());
+}
+
+/* Return true only when Dev 1's complete schedule API is linked. */
+static bool SensorScheduleIsAvailable()
+{
+#if defined(__GNUC__)
+    return (PowerState_Get != nullptr) && (Schedule_Init != nullptr) && (Schedule_TryTakeDue != nullptr);
+#else
+    return true;
+#endif
+}
+
+/* Tick-wrap-safe deadline comparison used only by the legacy fallback. */
+static bool DeadlineReached(uint32_t now, uint32_t deadline)
+{
+    return static_cast<int32_t>(now - deadline) >= 0;
+}
+
+//the big task that checks and collects data from payloads
 void payload_collector_run()
 {
 	// Boot marker generation
+	// every time the system turns on it will write it to a record
+	// we will be able to see how much times the system booted
 	LogRecord_t boot_rec;
 	memset(&boot_rec, 0, sizeof(boot_rec));
 
@@ -389,22 +454,65 @@ void payload_collector_run()
 	// Push the Boot Marker to the SD queue immediately upon boot
 	osMessageQueuePut(q_telemetryHandle, &boot_rec, 0U, 100U);
 
-	uint32_t next = osKernelGetTickCount();
-	while (1) {
-		next += COLLECT_PERIOD_TICKS;
-		// the important part where it collects the data and publishes it
-		for (auto &n : s_nodes) {
-			collect_from_node(n);
+	uint32_t check_period_ticks = SCHEDULE_CHECK_PERIOD_MS * osKernelGetTickFreq() / 1000u;
+	if (check_period_ticks == 0u)
+	{
+		check_period_ticks = 1u;
+	}
+
+	uint32_t next_check_ticks = osKernelGetTickCount();
+	uint32_t legacy_due_ms = HAL_GetTick();
+
+	//main loop when system is working
+	for (;;)
+	{
+		next_check_ticks += check_period_ticks;
+		const bool schedule_available = SensorScheduleIsAvailable();
+		const uint32_t now_ms = HAL_GetTick();
+		bool legacy_cycle_due = false;
+
+		if (!schedule_available && DeadlineReached(now_ms, legacy_due_ms))
+		{
+			// Preserve the working 500 ms polling until Dev 1's module is merged.
+			legacy_cycle_due = true;
+			legacy_due_ms = now_ms + LEGACY_COLLECT_PERIOD_MS;
 		}
 
-		// tick counters wrap at 2^32, and unsigned subtraction cast to signed handles the wrap correctly
-		if ((int32_t)(osKernelGetTickCount() - next) > 0) {
+		if (schedule_available || legacy_cycle_due)
+		{
+			SatState_t state = SAT_STATE_NORMAL;
+			bool state_valid = true;
+
+			if (schedule_available)
+			{
+				state = PowerState_Get();
+				state_valid = static_cast<uint32_t>(state)
+								< static_cast<uint32_t>(SAT_STATE_COUNT);
+			}
+
+			if (state_valid)
+			{
+				for (const ScheduledSensor& sensor : SENSORS)
+				{
+					if (schedule_available &&
+							!Schedule_TryTakeDue(sensor.schedule_item, state, now_ms))
+					{
+						continue;
+					}
+
+					ReadScheduledSensor(sensor);
+				}
+			}
+		}
+
+		const uint32_t loop_end_ticks = osKernelGetTickCount();
+		if (static_cast<int32_t>(loop_end_ticks - next_check_ticks) > 0)
+		{
 			++s_overruns;
+			next_check_ticks = loop_end_ticks;
 		}
 
-		// Publish status only after the Payload and EPS polling cycle is complete.
 		PublishCollectorStatus();
-
-		osDelayUntil(next);
+		osDelayUntil(next_check_ticks);
 	}
 }

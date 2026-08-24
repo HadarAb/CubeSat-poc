@@ -112,12 +112,12 @@ UartStatusPayload_t BuildStatusPayload(uint8_t power_state)
     status.sd_error_count = SdLogger_GetErrorCount();
 
     Snapshot battery_snapshot = {};
-    bool battery_valid = PayloadCollector_GetSnapshot(EPS_NODE_ID, &battery_snapshot);
+    bool battery_valid = PayloadCollector_GetSnapshot(EPS_NODE_ID, &battery_snapshot) && battery_snapshot.battery_valid;
 
     if (!battery_valid)
     {
         // Payload is the PDF's fallback battery source when EPS has no sample.
-        battery_valid = PayloadCollector_GetSnapshot(PAYLOAD_NODE_ID, &battery_snapshot);
+        battery_valid = PayloadCollector_GetSnapshot(PAYLOAD_NODE_ID, &battery_snapshot) && battery_snapshot.battery_valid;
     }
 
     if (battery_valid)

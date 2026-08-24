@@ -14,6 +14,7 @@ extern "C" {
  */
 typedef struct {
     bool valid;
+    bool battery_valid;
     uint32_t obc_time_ms;
     PayloadData_t data;
 } Snapshot;
@@ -45,9 +46,9 @@ void PayloadCollector_Init(void);
 /**
  * @brief Main FreeRTOS task loop for the Payload/EPS telemetry collector.
  *
- * Polls both configured I2C nodes at a fixed 500ms interval. Pushes telemetry records
- * to the SD logger queue and updates the live snapshot for Ground Station
- * queries. This function never returns.
+ * Checks every known sensor against the state-dependent schedule. Due values
+ * are queued for SD storage and update their field in the persistent Ground
+ * Station snapshot. This function never returns.
  */
 void payload_collector_run(void);
 
