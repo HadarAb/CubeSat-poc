@@ -26,6 +26,7 @@ extern "C" {
 #define UART_MSG_STATUS              0x01u
 #define UART_MSG_PAYLOAD             0x02u
 #define UART_MSG_BATTERY             0x03u
+#define UART_MSG_AUTO_STATUS         0x04u
 #define UART_MSG_SIM_SET             0x40u
 #define UART_MSG_SIM_GET             0x41u
 #define UART_MSG_SIM_LIST            0x42u
@@ -71,6 +72,29 @@ typedef struct __attribute__((packed))
     uint32_t i2c_success_count;
     uint32_t i2c_error_count;
 } UartPayload_t;
+
+/*
+ * OBC system status. STATUS and AUTO_STATUS use this structure, while PAYLOAD
+ * and BATTERY continue using UartPayload_t.
+ */
+typedef struct __attribute__((packed))
+{
+    uint8_t status;
+    uint8_t power_state;
+    uint8_t battery_pct;
+    uint8_t battery_valid;
+    uint8_t payload_online;
+    uint8_t eps_online;
+    uint8_t sd_state;
+    uint8_t reserved;
+    uint32_t dropped_frames;
+    uint32_t collector_overruns;
+    uint32_t payload_i2c_errors;
+    uint32_t eps_i2c_errors;
+    uint32_t payload_crc_failures;
+    uint32_t eps_crc_failures;
+    uint32_t sd_error_count;
+} UartStatusPayload_t;
 
 // when you want to set a sensor value / or make a new sensor value
 // watch out that all name and value have fixed size
@@ -128,6 +152,8 @@ static_assert(sizeof(UartFrameHeader_t) == 11u,
               "UartFrameHeader_t wire layout must stay 11 bytes");
 static_assert(sizeof(UartPayload_t) == 23u,
               "UartPayload_t wire layout must stay 23 bytes");
+static_assert(sizeof(UartStatusPayload_t) == 36u,
+              "UartStatusPayload_t wire layout must stay 36 bytes");
 static_assert(sizeof(UartSimSetPayload_t) == 18u,
               "UartSimSetPayload_t wire layout must stay 18 bytes");
 static_assert(sizeof(UartSimGetPayload_t) == 8u,
@@ -139,6 +165,8 @@ _Static_assert(sizeof(UartFrameHeader_t) == 11u,
                "UartFrameHeader_t wire layout must stay 11 bytes");
 _Static_assert(sizeof(UartPayload_t) == 23u,
                "UartPayload_t wire layout must stay 23 bytes");
+_Static_assert(sizeof(UartStatusPayload_t) == 36u,
+               "UartStatusPayload_t wire layout must stay 36 bytes");
 _Static_assert(sizeof(UartSimSetPayload_t) == 18u,
                "UartSimSetPayload_t wire layout must stay 18 bytes");
 _Static_assert(sizeof(UartSimGetPayload_t) == 8u,

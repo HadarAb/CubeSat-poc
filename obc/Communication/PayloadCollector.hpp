@@ -19,6 +19,22 @@ typedef struct {
 } Snapshot;
 
 /**
+ * @brief Cached communication health published by the collector task.
+ */
+typedef struct
+{
+    bool valid;
+    bool payload_online;
+    bool eps_online;
+    uint32_t dropped_frames;
+    uint32_t overruns;
+    uint32_t payload_i2c_errors;
+    uint32_t eps_i2c_errors;
+    uint32_t payload_crc_failures;
+    uint32_t eps_crc_failures;
+} PayloadCollectorStatus_t;
+
+/**
  * @brief Initializes resources required by the Payload Collector.
  *
  * Creates the priority-inheriting mutex for the telemetry snapshot.
@@ -43,6 +59,11 @@ void payload_collector_run(void);
  * @return true if the snapshot contains valid data, false otherwise
  */
 bool PayloadCollector_GetSnapshot(uint8_t node_id, Snapshot *out);
+
+/**
+ * @brief Safely reads the collector's cached node and queue health.
+ */
+bool PayloadCollector_GetStatus(PayloadCollectorStatus_t* out);
 
 #ifdef __cplusplus
 }

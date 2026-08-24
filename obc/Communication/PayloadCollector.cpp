@@ -19,10 +19,11 @@ static const uint32_t COLLECT_PERIOD_TICKS = 500U * osKernelGetTickFreq() / 1000
 extern osMessageQueueId_t q_telemetryHandle; // from freertos.c the queue
 extern osMutexId_t i2c_mtxHandle; // shared I2C bus mutex
 
+// struct for each payload/node about its status
 struct NodeState {
     uint16_t addr; // shifted HAL address
     uint8_t node_id; // logical ID
-    bool online;
+    bool online;	// is it working
     uint32_t err_count;
     uint32_t crc_fail;
     uint8_t consecutive_errors; // tracks successive failures to avoid false offline alerts
@@ -38,9 +39,10 @@ static NodeState s_nodes[] = {
 // calculate the number of nodes in the array (avoid hard coding)
 static const uint8_t NODE_COUNT = sizeof(s_nodes) / sizeof(s_nodes[0]);
 
-// Create exactly one snapshot buffer per node
+// Create exactly one snapshot buffer per module
 static Snapshot s_snapshot[NODE_COUNT];
 static osMutexId_t s_snapshot_mtx;
+static PayloadCollectorStatus_t s_status = {};
 
 static uint32_t s_dropped_frames = 0;
 static uint32_t s_overruns = 0;
@@ -78,6 +80,52 @@ bool PayloadCollector_GetSnapshot(uint8_t node_id, Snapshot *out)
 	osMutexRelease(s_snapshot_mtx);
 
 	return out->valid;
+}
+
+/* safe/mutex gatter for status of all payloads  */
+bool PayloadCollector_GetStatus(PayloadCollectorStatus_t* out)
+{
+    if ((out == nullptr) || (osMutexAcquire(s_snapshot_mtx, 10u) != osOK))
+    {
+        return false;
+    }
+
+    *out = s_status;
+    osMutexRelease(s_snapshot_mtx);
+    return out->valid;
+}
+
+/* Publishes one coherent status snapshot after both nodes have been polled. */
+static void PublishCollectorStatus()
+{
+    if (osMutexAcquire(s_snapshot_mtx, 10u) != osOK)
+    {
+        return;
+    }
+
+    //start updating status
+    s_status.valid = true;
+    s_status.dropped_frames = s_dropped_frames;
+    s_status.overruns = s_overruns;
+
+    for (const NodeState& node : s_nodes)
+    {
+    	//find each module and update its status
+        if (node.node_id == PAYLOAD_NODE_ID)
+        {
+            s_status.payload_online = node.online;
+            s_status.payload_i2c_errors = node.err_count;
+            s_status.payload_crc_failures = node.crc_fail;
+        }
+        else if (node.node_id == EPS_NODE_ID)
+        {
+            s_status.eps_online = node.online;
+            s_status.eps_i2c_errors = node.err_count;
+            s_status.eps_crc_failures = node.crc_fail;
+        }
+    }
+
+    osMutexRelease(s_snapshot_mtx);
 }
 
 enum class SnapshotField : uint8_t
@@ -169,7 +217,10 @@ static uint8_t BatteryVoltageToPercent(float voltage)
         (((voltage - EmptyVoltage) * 100.0f) / (FullVoltage - EmptyVoltage)) + 0.5f);
 }
 
-/*  */
+/* saves data inside the snapshot
+ * spec what value it is and where to save it
+ * wire the value it self in numbers
+ * snapshot is the cashed space where we will save the data  */
 static void ApplyToSnapshot(const KeySpec& spec, const VtValueWire_t& wire,
                             PayloadData_t* snapshot)
 {
@@ -239,10 +290,19 @@ static void PublishSnapshot(const NodeState& node, const PayloadData_t& data,
  * a long part here is inside the mutex */
 static void collect_from_node(NodeState& node)
 {
-    const KeySpec* keys = (node.node_id == PAYLOAD_NODE_ID) ? PAYLOAD_KEYS : EPS_KEYS;
-    const uint8_t key_count = (node.node_id == PAYLOAD_NODE_ID)
-        ? static_cast<uint8_t>(sizeof(PAYLOAD_KEYS) / sizeof(PAYLOAD_KEYS[0]))
-        : static_cast<uint8_t>(sizeof(EPS_KEYS) / sizeof(EPS_KEYS[0]));
+	const KeySpec* keys = nullptr;
+	uint8_t key_count = 0;
+
+	if (node.node_id == PAYLOAD_NODE_ID)
+	{
+	    keys = PAYLOAD_KEYS;
+	    key_count = static_cast<uint8_t>(sizeof(PAYLOAD_KEYS) / sizeof(PAYLOAD_KEYS[0]));
+	}
+	else
+	{
+	    keys = EPS_KEYS;
+	    key_count = static_cast<uint8_t>(sizeof(EPS_KEYS) / sizeof(EPS_KEYS[0]));
+	}
 
     PayloadData_t snapshot_data = {};
     snapshot_data.timestamp_ms = osKernelGetTickCount();
@@ -251,8 +311,7 @@ static void collect_from_node(NodeState& node)
     bool node_responded = false;
     bool received_value = false;
 
-    if ((i2c_mtxHandle == nullptr)
-        || (osMutexAcquire(i2c_mtxHandle, osWaitForever) != osOK)) {
+    if ((i2c_mtxHandle == nullptr) || (osMutexAcquire(i2c_mtxHandle, osWaitForever) != osOK)) {
         ++node.err_count;
         return;
     }
@@ -260,8 +319,8 @@ static void collect_from_node(NodeState& node)
     for (uint8_t index = 0u; index < key_count; ++index) {
         VtValueWire_t wire = {};
         //request from one of the nodes for data by index and name
-        const I2CKeyReadResult_t result = I2CMaster_ReadKey(
-        		node.addr, keys[index].name, keys[index].expected_type, &wire);
+        const I2CKeyReadResult_t result =
+        		I2CMaster_ReadKey(node.addr, keys[index].name, keys[index].expected_type, &wire);
 
         if (result == I2C_KEY_READ_BUS_ERROR) {
             ++node.err_count;
@@ -342,6 +401,9 @@ void payload_collector_run()
 		if ((int32_t)(osKernelGetTickCount() - next) > 0) {
 			++s_overruns;
 		}
+
+		// Publish status only after the Payload and EPS polling cycle is complete.
+		PublishCollectorStatus();
 
 		osDelayUntil(next);
 	}
