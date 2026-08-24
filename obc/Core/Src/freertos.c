@@ -257,8 +257,8 @@ void StartTask_PowerMgmt(void *argument)
 void StartTask_GroundComm(void *argument)
 {
   /* USER CODE BEGIN StartTask_GroundComm */
-  /* Drains the USART2 RX ring buffer, answers ground-station requests, and runs the
-     500 ms payload poll. Before the RTOS this ran from the main() superloop, which
+  /* Drains the USART2 RX ring buffer, answers ground-station requests, and checks
+     the automatic-status schedule. Before the RTOS this ran from main(), which
      osKernelStart() made unreachable -- without this call the OBC transmits its boot
      banner and then never answers a command. */
   /* Infinite loop */

@@ -1,4 +1,4 @@
-/* Public OBC controller interface for UART commands and periodic payload polling. */
+/* Public OBC controller interface for requested and automatic UART traffic. */
 #pragma once
 
 #include "stm32l4xx_hal.h"
@@ -10,7 +10,7 @@ extern "C" {
 /* Initializes the OBC I2C master and framed UART protocol. */
 void ObcController_Init(I2C_HandleTypeDef* i2c_handle);
 
-/* Processes received UART commands and performs scheduled payload polling. */
+/* Processes received UART commands and sends scheduled automatic status. */
 void ObcController_Process(void);
 
 #ifdef __cplusplus
