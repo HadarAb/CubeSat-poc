@@ -1,4 +1,4 @@
-/* Shared USART2 buffering, frame parsing, CRC checking, and transmission. */
+/* Shared USART2 interrupt buffering, frame parsing, CRC checking, and transmission. */
 #pragma once
 
 #include "../crc32.h"
@@ -12,16 +12,25 @@
 class UartTransport
 {
 public:
-    /* Enables interrupt-backed USART2 reception after CubeMX initializes it. */
+    /* init uart clears every thing , and makes ready to transmit interrupt work only
+     * when there are actual bytes to send  */
     void Init(void)
     {
         rx_head = 0u;
         rx_tail = 0u;
         rx_overflow_count = 0u;
+        tx_head = 0u;
+        tx_tail = 0u;
+        tx_overflow_count = 0u;
         crc_error_count = 0u;
         ResetFrameParser();
 
+        // TXE is enabled only when bytes are waiting in the software TX queue.
+        // disable ready to send interrupt
+        CLEAR_BIT(USART2->CR1, USART_CR1_TXEIE);
+        // clears all flags
         USART2->ICR = USART_ICR_ORECF | USART_ICR_FECF | USART_ICR_NCF;
+        // enable ready to send interrupt when there are bytes to send
         SET_BIT(USART2->CR1, USART_CR1_RXNEIE);
 
         HAL_NVIC_SetPriority(USART2_IRQn, 5u, 0u);
@@ -55,9 +64,9 @@ public:
     }
 
 
-    /* Sends one complete binary frame. Returns 1 on success, otherwise 0. */
+    /* Builds and queues one complete frame. Returns 0 if the TX queue has no room. */
     uint8_t SendFrame(uint8_t msg_type, uint16_t sequence,
-                      const void* payload, uint16_t payload_length)
+    				const void* payload, uint16_t payload_length)
     {
         if ((payload_length > UART_MAX_PAYLOAD_SIZE)
             || ((payload_length > 0u) && (payload == nullptr)))
@@ -87,23 +96,34 @@ public:
         const uint32_t crc = Protocol_Crc32(frame, crc_offset);
         std::memcpy(&frame[crc_offset], &crc, sizeof(crc));
 
-        WriteBytes(frame, static_cast<uint16_t>(crc_offset + UART_FRAME_CRC_SIZE));
-        return 1u;
+        // Copy the complete frame into the TX queue before this stack buffer disappears
+        const uint16_t frame_size = static_cast<uint16_t>(crc_offset + UART_FRAME_CRC_SIZE);
+        return QueueBytes(frame, frame_size);
     }
 
-
-    /* Handles USART errors and queues one received byte without blocking. */
+    /* This function is getting triggered every UART interrupt and handles
+     * sending or receiving bytes.
+     * So when UART is ready for TX, it will trigger an interrupt and this function
+     * will get triggered
+     * it will send the next byte.
+     * If we got a byte on RX, the interrupt will trigger and this function
+     * will read the byte and save it.
+     */
     void HandleInterrupt(void)
     {
+    	//read uart status register (is uart ready , any errors , byte arrived)
         const uint32_t status = USART2->ISR;
 
+        //checks for errors
         if ((status & (USART_ISR_ORE | USART_ISR_FE | USART_ISR_NE)) != 0u)
         {
+        	//clears the errors
             USART2->ICR = USART_ICR_ORECF | USART_ICR_FECF | USART_ICR_NCF;
         }
-
+        // did we recive a new byte
         if ((status & USART_ISR_RXNE) != 0u)
         {
+        	//if ye read the byte
             const uint8_t byte = static_cast<uint8_t>(USART2->RDR);
             const uint16_t next_head =
                 static_cast<uint16_t>((rx_head + 1u) % RxQueueSize);
@@ -118,22 +138,49 @@ public:
                 ++rx_overflow_count;
             }
         }
+        // is uart ready to send anouther byte is TX interrupt enabled
+        // handles the sending part
+        if (((status & USART_ISR_TXE) != 0u)
+            && ((USART2->CR1 & USART_CR1_TXEIE) != 0u))
+        {
+            if (tx_tail != tx_head)
+            {
+                // Writing TDR clears TXE. Hardware interrupts again when it is ready.
+                USART2->TDR = tx_queue[tx_tail];
+                tx_tail = static_cast<uint16_t>((tx_tail + 1u) % TxQueueSize);
+            }
+
+            if (tx_tail == tx_head)
+            {
+                // No bytes remain, so stop TX interrupts until another frame is queued.
+                CLEAR_BIT(USART2->CR1, USART_CR1_TXEIE);
+            }
+        }
     }
 
 
 private:
     static constexpr uint16_t RxQueueSize = 256u;
+    static constexpr uint16_t TxQueueSize = 2048u;
 
-    // the buffer that the interrupt throws raw bytes
+    /* Raw bytes received by the UART interrupt wait in this ring. */
     volatile uint8_t rx_queue[RxQueueSize] = {};
-    // where to put new data in the buffer
+    /* The interrupt writes new RX bytes at rx_head. */
     volatile uint16_t rx_head = 0u;
-    // data that can be processed
+    /* TryReceive reads pending RX bytes at rx_tail. */
     volatile uint16_t rx_tail = 0u;
     volatile uint32_t rx_overflow_count = 0u;
+
+    /* Complete frames wait here while USART2 sends one byte at a time. */
+    volatile uint8_t tx_queue[TxQueueSize] = {};
+    /* The task writes at tx_head; the UART interrupt reads at tx_tail. */
+    volatile uint16_t tx_head = 0u;
+    volatile uint16_t tx_tail = 0u;
+    volatile uint32_t tx_overflow_count = 0u;
+
     uint32_t crc_error_count = 0u;
 
-    // frame where you construct the msg
+    /* Parser storage for one frame being received. */
     uint8_t frame_buffer[UART_MAX_FRAME_SIZE] = {};
     uint16_t frame_count = 0u;
     uint16_t expected_frame_size = 0u;
@@ -147,7 +194,7 @@ private:
     }
 
 
-    //check if first byte is start byte FF
+    /* Resets the parser and treats byte as a possible first start byte. */
     void BeginFrameWithByte(uint8_t byte)
     {
         ResetFrameParser();
@@ -160,34 +207,65 @@ private:
     }
 
 
-    /*transmit a msg to the other end . */
-    // send bytes threw UART
-    void WriteBytes(const uint8_t* bytes_arr, uint16_t size)
+    /* Restores the exact interrupt state that existed before a critical section. */
+    static void ExitCritical(uint32_t previous_primask)
     {
-        for (uint16_t index = 0u; index < size; ++index)
+        __set_PRIMASK(previous_primask);
+    }
+
+
+    /* Copies one whole frame to the TX ring and starts TXE interrupts. */
+    uint8_t QueueBytes(const uint8_t* bytes_arr, uint16_t size)
+    {
+        if ((bytes_arr == nullptr) || (size == 0u) || (size >= TxQueueSize))
         {
-            // check uart transmit register is empty
-            // wait till transmit is empty
-            while ((USART2->ISR & USART_ISR_TXE) == 0u)
-            {
-            }
-            // access transmit register and write our byte
-            //put bytes into transmiter
-            USART2->TDR = bytes_arr[index];
+            return 0u;
         }
 
-        // wait until all bytes have passed .
-        //wait till uart finished to send all bytes
-        while ((USART2->ISR & USART_ISR_TC) == 0u)
+        // save current interrupts state , and disable them
+        const uint32_t previous_primask = __get_PRIMASK();
+        __disable_irq();
+
+        // for the tx head tail calculations
+        uint16_t used = 0u;
+        if (tx_head >= tx_tail)
         {
+            used = static_cast<uint16_t>(tx_head - tx_tail);
         }
+        else
+        {
+            used = static_cast<uint16_t>(TxQueueSize - (tx_tail - tx_head));
+        }
+
+        // calculate free space
+        const uint16_t free_space = static_cast<uint16_t>(TxQueueSize - used - 1u);
+        //if we cant copy full frame we wont do it
+        if (size > free_space)
+        {
+            ++tx_overflow_count;
+            ExitCritical(previous_primask);
+            return 0u;
+        }
+
+        // full frame is coppied to the TX byte by byte
+        for (uint16_t index = 0u; index < size; ++index)
+        {
+            tx_queue[tx_head] = bytes_arr[index];
+            tx_head = static_cast<uint16_t>((tx_head + 1u) % TxQueueSize);
+        }
+
+        // enable interrupts again
+        SET_BIT(USART2->CR1, USART_CR1_TXEIE);
+        ExitCritical(previous_primask);
+        return 1u;
     }
 
 
     /*
      * Find start bytes, collect header ,learn expected payload size ,collect the rest
-     * ,read received CRC ,calculate CRC ,compare them ,return the message type and sequence if valid
-     * */
+     * ,read received CRC ,calculate CRC,compare them ,
+     *  return the message type and sequence if valid
+     */
     uint8_t ConsumeByte(uint8_t byte, UartReceivedFrame_t* out)
     {
         // get first 8 and 16 bits to check is it a start of a msg

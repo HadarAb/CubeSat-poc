@@ -3,10 +3,19 @@
 from __future__ import annotations
 
 import threading
+import time
 
 from ground_station.protocol import FrameParser
 
-from .protocol import SimMessageType, SimValue, decode_sim_ack, encode_sim_set, format_value
+from .protocol import (
+    SimMessageType,
+    SimValue,
+    decode_sim_ack,
+    encode_sim_get,
+    encode_sim_list,
+    encode_sim_set,
+    format_value,
+)
 
 
 class SimulatorTransport:
@@ -66,7 +75,7 @@ class SimulatorTransport:
     def send_values(self, values: list[SimValue]) -> None:
         with self._lock:
             for item in values:
-                self._sequence = (self._sequence + 1) & 0xFFFF
+                self._sequence = self._next_sequence()
                 frame = encode_sim_set(self._sequence, item)
                 destination = self.port or "dry-run"
                 print(
@@ -79,19 +88,59 @@ class SimulatorTransport:
                     self._serial.write(frame)
             self._poll_responses()
 
-    def _poll_responses(self) -> None:
-        if self._serial is None or self._serial.in_waiting <= 0:
+    def request_value(self, name: str) -> None:
+        with self._lock:
+            self._sequence = self._next_sequence()
+            frame = encode_sim_get(self._sequence, name)
+            self._send_request(frame, f"GET {name}")
+            self._poll_responses(0.15)
+
+    def request_list(self) -> None:
+        with self._lock:
+            self._sequence = self._next_sequence()
+            frame = encode_sim_list(self._sequence)
+            self._send_request(frame, "LIST")
+            # A full table can return many ACK frames, so allow more receive time.
+            self._poll_responses(0.50)
+
+    def _next_sequence(self) -> int:
+        return (self._sequence + 1) & 0xFFFF
+
+    def _send_request(self, frame: bytes, description: str) -> None:
+        destination = self.port or "dry-run"
+        print(f"[{destination} seq={self._sequence:05d}] {description}")
+        if self.show_frames:
+            print(f"  frame: {frame.hex(' ')}")
+        if self._serial is not None:
+            self._serial.write(frame)
+
+    def _poll_responses(self, wait_seconds: float = 0.0) -> None:
+        if self._serial is None:
             return
-        for frame in self._parser.feed(self._serial.read(self._serial.in_waiting)):
-            if frame.msg_type == SimMessageType.ACK:
-                ack = decode_sim_ack(frame)
-                key = ack.name or "-"
-                print(
-                    f"[board ack] status={ack.status.name} request=0x{ack.request_type:02X} "
-                    f"key={key} index={ack.index} count={ack.count}"
-                )
-            else:
+
+        deadline = time.monotonic() + wait_seconds
+        while True:
+            waiting = self._serial.in_waiting
+            if waiting > 0:
+                self._print_responses(self._serial.read(waiting))
+
+            if time.monotonic() >= deadline:
+                return
+            time.sleep(0.005)
+
+    def _print_responses(self, received: bytes) -> None:
+        for frame in self._parser.feed(received):
+            if frame.msg_type != SimMessageType.ACK:
                 print(f"[board] frame type=0x{frame.msg_type:02X} seq={frame.sequence}")
+                continue
+
+            ack = decode_sim_ack(frame)
+            key = ack.name or "-"
+            value = format_value(ack.value) if ack.value is not None else "-"
+            print(
+                f"[board ack] status={ack.status.name} request=0x{ack.request_type:02X} "
+                f"key={key} value={value} index={ack.index} count={ack.count}"
+            )
 
 
 def list_serial_ports() -> list[tuple[str, str]]:

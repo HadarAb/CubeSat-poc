@@ -16,6 +16,7 @@ MAX_PAYLOAD_SIZE = 64
 # Must match UartFrameHeader_t and UartPayload_t in common/uart/uart_protocol.h.
 HEADER = struct.Struct("<HBHIH")
 PAYLOAD = struct.Struct("<BBBBIhHHBII")
+STATUS_PAYLOAD = struct.Struct("<BBBBBBBBIIIIIII")
 CRC = struct.Struct("<I")
 START_BYTES = struct.pack("<H", FRAME_START)
 
@@ -25,6 +26,7 @@ class MessageType(IntEnum):
     STATUS = 0x01
     PAYLOAD = 0x02
     BATTERY = 0x03
+    AUTO_STATUS = 0x04
     DEBUG_TEXT = 0x70
     ERROR = 0xFF
 
@@ -59,6 +61,24 @@ class UartPayload:
     battery_pct: int
     i2c_success_count: int
     i2c_error_count: int
+
+
+@dataclass(frozen=True)
+class UartStatusPayload:
+    status: int
+    power_state: int
+    battery_pct: int
+    battery_valid: bool
+    payload_online: bool
+    eps_online: bool
+    sd_state: int
+    dropped_frames: int
+    collector_overruns: int
+    payload_i2c_errors: int
+    eps_i2c_errors: int
+    payload_crc_failures: int
+    eps_crc_failures: int
+    sd_error_count: int
 
 
 def timestamp_ms() -> int:
@@ -205,6 +225,32 @@ def decode_payload(frame: Frame) -> UartPayload:
         battery_pct=values[8],
         i2c_success_count=values[9],
         i2c_error_count=values[10],
+    )
+
+
+def decode_status(frame: Frame) -> UartStatusPayload:
+    if len(frame.payload) != STATUS_PAYLOAD.size:
+        raise ValueError(
+            f"message 0x{frame.msg_type:02X} has "
+            f"{len(frame.payload)} status bytes; expected {STATUS_PAYLOAD.size}"
+        )
+
+    values = STATUS_PAYLOAD.unpack(frame.payload)
+    return UartStatusPayload(
+        status=values[0],
+        power_state=values[1],
+        battery_pct=values[2],
+        battery_valid=bool(values[3]),
+        payload_online=bool(values[4]),
+        eps_online=bool(values[5]),
+        sd_state=values[6],
+        dropped_frames=values[8],
+        collector_overruns=values[9],
+        payload_i2c_errors=values[10],
+        eps_i2c_errors=values[11],
+        payload_crc_failures=values[12],
+        eps_crc_failures=values[13],
+        sd_error_count=values[14],
     )
 
 

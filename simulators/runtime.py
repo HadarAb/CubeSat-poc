@@ -125,6 +125,7 @@ def _run_interactive(
     time_scale: float,
 ) -> None:
     stopped = threading.Event()
+    simulator_help = f"get <key> | list | {model.command_help()}"
 
     def produce() -> None:
         previous = time.monotonic()
@@ -136,7 +137,7 @@ def _run_interactive(
 
     worker = threading.Thread(target=produce, name="sim-producer", daemon=True)
     worker.start()
-    print(f"[sim] commands: {model.command_help()}")
+    print(f"[sim] commands: {simulator_help}")
     try:
         while not stopped.is_set():
             words = shlex.split(input("sim> ").strip())
@@ -146,12 +147,21 @@ def _run_interactive(
             if command in {"quit", "exit"}:
                 stopped.set()
             elif command == "help":
-                print(model.command_help())
+                print(simulator_help)
             elif command == "status":
                 print(model.status())
             else:
                 try:
-                    print(model.apply_command(words))
+                    if command == "get":
+                        if len(words) != 2:
+                            raise ValueError("usage: get <key>")
+                        transport.request_value(words[1])
+                    elif command == "list":
+                        if len(words) != 1:
+                            raise ValueError("usage: list")
+                        transport.request_list()
+                    else:
+                        print(model.apply_command(words))
                 except ValueError as error:
                     print(f"error: {error}")
     except (EOFError, KeyboardInterrupt):

@@ -49,6 +49,9 @@ status
 quit
 ```
 
+Both node simulators also accept `get <key>` and `list`. These send `SIM_GET`
+and `SIM_LIST` to the connected board and print its `SIM_ACK` responses.
+
 The standard Payload VTable keys are `TEMP`, `TDOSE`, `SEL`, and `NRESET`.
 
 ## EPS
