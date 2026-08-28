@@ -7,6 +7,7 @@ import queue
 import sys
 import threading
 import time
+from datetime import datetime
 
 try:
     from .protocol import (
@@ -15,9 +16,17 @@ try:
         MessageType,
         Status,
         decode_debug_text,
+        decode_fetch_end,
+        decode_fetch_records,
         decode_payload,
         decode_status,
+        encode_fetch,
         encode_request,
+        encode_set_time,
+        record_crc_is_valid,
+        LOG_RECORD_TYPE_BOOT,
+        VOLUME_HK,
+        VOLUME_PAYLOAD,
     )
 except ImportError:
     from protocol import (
@@ -26,14 +35,30 @@ except ImportError:
         MessageType,
         Status,
         decode_debug_text,
+        decode_fetch_end,
+        decode_fetch_records,
         decode_payload,
         decode_status,
+        encode_fetch,
         encode_request,
+        encode_set_time,
+        record_crc_is_valid,
+        LOG_RECORD_TYPE_BOOT,
+        VOLUME_HK,
+        VOLUME_PAYLOAD,
     )
+
+try:
+    from .plotting import plot_records
+    from .sensors import decode_value, describe_sensor
+except ImportError:
+    from plotting import plot_records
+    from sensors import decode_value, describe_sensor
 
 
 BAUD_RATE = 115200
 RESPONSE_TIMEOUT_SECONDS = 2.0
+FETCH_TIMEOUT_SECONDS = 10.0
 
 
 class GroundStation:
@@ -44,6 +69,10 @@ class GroundStation:
         self.response_queue: queue.Queue[Frame] = queue.Queue()
         self.stop_event = threading.Event()
         self.reader_thread: threading.Thread | None = None
+        self.write_lock = threading.Lock()
+        self.auto_time_sync = True
+        self.last_sync_epoch: int | None = None
+        self._time_sync_pending = False
 
     # Start the only thread that is allowed to read from the serial port.
     def start(self) -> None:
@@ -74,6 +103,7 @@ class GroundStation:
     # Display unsolicited frames now and queue requested replies for request().
     def _dispatch_frame(self, frame: Frame) -> None:
         if frame.msg_type == MessageType.AUTO_STATUS:
+            self._maybe_auto_sync_time(frame)
             show_automatic_status(frame)
             return
 
@@ -92,13 +122,20 @@ class GroundStation:
         data = self.serial.read(waiting if waiting > 0 else 1)
         return self.parser.feed(data)
 
-    def request(self, msg_type: MessageType) -> Frame:
+    # Every write goes through one lock; the reader thread also sends SET_TIME.
+    def _send(self, frame: bytes) -> None:
+        with self.write_lock:
+            self.serial.write(frame)
+            self.serial.flush()
+
+    def request(self, msg_type: MessageType, payload: bytes = b"") -> Frame:
         self.start()
 
         sequence = self._next_sequence()
-        self.serial.write(encode_request(msg_type, sequence))
-        self.serial.flush()
+        self._send(encode_request(msg_type, sequence, payload))
+        return self._await_response(msg_type, sequence)
 
+    def _await_response(self, msg_type: MessageType, sequence: int) -> Frame:
         deadline = time.monotonic() + RESPONSE_TIMEOUT_SECONDS
         while True:
             remaining = deadline - time.monotonic()
@@ -130,6 +167,88 @@ class GroundStation:
                 )
 
             return frame
+
+    # Push the current wall-clock time to the OBC. Idempotent.
+    def set_time(self, epoch_s: int | None = None) -> int:
+        if epoch_s is None:
+            epoch_s = int(time.time())
+
+        self.start()
+        sequence = self._next_sequence()
+        self._send(encode_request(MessageType.SET_TIME, sequence, encode_set_time(epoch_s)))
+        self._await_response(MessageType.SET_TIME, sequence)
+        self.last_sync_epoch = epoch_s
+        return epoch_s
+
+    # Q3: the OBC never blocks on the ground. It raises TIME_INVALID in its
+    # beacon and we push the clock back without operator action.
+    def _maybe_auto_sync_time(self, frame: Frame) -> None:
+        if not self.auto_time_sync:
+            return
+
+        try:
+            status = decode_status(frame)
+        except ValueError:
+            return
+
+        if status.time_valid:
+            self._time_sync_pending = False
+            return
+
+        # One attempt per invalid streak, so a failing OBC cannot be spammed.
+        if self._time_sync_pending:
+            return
+
+        self._time_sync_pending = True
+        epoch = int(time.time())
+        try:
+            self._send(
+                encode_request(
+                    MessageType.SET_TIME, self._next_sequence(), encode_set_time(epoch)
+                )
+            )
+            self.last_sync_epoch = epoch
+            print(f"\n[AUTO TIME SYNC] pushed epoch {epoch} to OBC")
+        except Exception as error:
+            print(f"\n[AUTO TIME SYNC FAILED] {error}")
+
+    # Stream one fetch. Returns (records, FetchEnd).
+    def fetch(self, from_epoch: int, to_epoch: int, volume: int,
+              max_records: int = 0) -> tuple[list, object]:
+        self.start()
+        sequence = self._next_sequence()
+        self._send(
+            encode_request(
+                MessageType.FETCH, sequence,
+                encode_fetch(from_epoch, to_epoch, volume, max_records),
+            )
+        )
+
+        records = []
+        deadline = time.monotonic() + FETCH_TIMEOUT_SECONDS
+
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0.0:
+                raise TimeoutError("fetch did not complete in time")
+
+            try:
+                frame = self.response_queue.get(timeout=remaining)
+            except queue.Empty:
+                raise TimeoutError("fetch did not complete in time") from None
+
+            if frame.sequence != sequence:
+                continue
+
+            if frame.msg_type == MessageType.ERROR:
+                raise RuntimeError(f"OBC error: {_status_name(decode_payload(frame).status)}")
+
+            if frame.msg_type == MessageType.FETCH_DATA:
+                records.extend(decode_fetch_records(frame))
+                continue
+
+            if frame.msg_type == MessageType.FETCH_END:
+                return records, decode_fetch_end(frame)
 
 
 def _status_name(value: int) -> str:
@@ -219,8 +338,74 @@ def show_battery(station: GroundStation) -> None:
     print(f"Battery: {payload.battery_pct} %")
 
 
+def parse_datetime(text: str) -> int:
+    """Accept 'YYYY-MM-DD HH:MM:SS', 'YYYY-MM-DD', or a raw epoch."""
+    if text.isdigit():
+        return int(text)
+
+    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%d"):
+        try:
+            return int(datetime.strptime(text, fmt).timestamp())
+        except ValueError:
+            continue
+
+    raise ValueError(f"cannot parse date/time: {text!r}")
+
+
+def render_records(records: list, last_sync_epoch: int | None) -> None:
+    if not records:
+        print("  (no records in range)")
+        return
+
+    print(f"  {'time':<20} {'node':<8} {'key':<8} {'value':>14}  flags")
+    for record in records:
+        node, key, vt_type = describe_sensor(record.sensor_id)
+        value = decode_value(record.value, vt_type)
+        when = datetime.fromtimestamp(record.epoch_s).strftime("%Y-%m-%d %H:%M:%S")
+
+        marks = []
+        if not record_crc_is_valid(record):
+            marks.append("CRC-BAD")
+        if record.type == LOG_RECORD_TYPE_BOOT:
+            marks.append("BOOT")
+        # Records written before the clock was set carry a pre-sync timestamp.
+        if last_sync_epoch is not None and record.epoch_s < last_sync_epoch:
+            marks.append("PRE-SYNC")
+
+        shown = f"{value:.3f}" if isinstance(value, float) else str(value)
+        print(f"  {when:<20} {node:<8} {key:<8} {shown:>14}  {' '.join(marks)}")
+
+
+def do_fetch(station: GroundStation, args: list[str]) -> None:
+    if len(args) < 2:
+        print("usage: fetch <from> <to> [payload|hk] [--plot]")
+        return
+
+    plot = "--plot" in args
+    args = [a for a in args if a != "--plot"]
+
+    volume = VOLUME_PAYLOAD
+    if len(args) >= 3:
+        volume = VOLUME_HK if args[2].lower() == "hk" else VOLUME_PAYLOAD
+
+    from_epoch = parse_datetime(args[0])
+    to_epoch = parse_datetime(args[1])
+
+    started = time.monotonic()
+    records, end = station.fetch(from_epoch, to_epoch, volume)
+    elapsed = time.monotonic() - started
+
+    label = "hk" if volume == VOLUME_HK else "payload"
+    print(f"[FETCH {label}] {len(records)} records in {elapsed:.3f}s")
+    print(f"  probes: {end.probe_count}  (linear scan would be {end.record_count})")
+    render_records(records, station.last_sync_epoch)
+
+    if plot:
+        plot_records(records)
+
+
 def interactive_loop(station: GroundStation) -> None:
-    print("Connected. Commands: status, payload, battery, help, quit")
+    print("Connected. Commands: status, payload, battery, fetch, time sync, help, quit")
     actions = {
         "status": show_status,
         "payload": show_payload,
@@ -240,9 +425,29 @@ def interactive_loop(station: GroundStation) -> None:
             print("status  - request OBC and I2C status")
             print("payload - request the latest cached telemetry")
             print("battery - request the latest battery percentage")
+            print("fetch   - fetch <from> <to> [payload|hk] [--plot]")
+            print("time    - time sync, push this PC's clock to the OBC")
             print("quit    - close the ground station")
             continue
         if not command:
+            continue
+
+        words = command.split()
+        if words[0] == "fetch":
+            try:
+                do_fetch(station, words[1:])
+            except (TimeoutError, RuntimeError, ValueError) as error:
+                print(f"Error: {error}")
+            continue
+        if words[0] == "time":
+            if len(words) > 1 and words[1] == "sync":
+                try:
+                    epoch = station.set_time()
+                    print(f"OBC clock set to {epoch}")
+                except (TimeoutError, RuntimeError, ValueError) as error:
+                    print(f"Error: {error}")
+            else:
+                print("usage: time sync")
             continue
 
         action = actions.get(command)

@@ -20,6 +20,25 @@ STATUS_PAYLOAD = struct.Struct("<BBBBBBBBIIIIIII")
 CRC = struct.Struct("<I")
 START_BYTES = struct.pack("<H", FRAME_START)
 
+# Must match UartSetTimePayload_t, UartFetchPayload_t and UartFetchEndPayload_t.
+SET_TIME_PAYLOAD = struct.Struct("<I")
+FETCH_PAYLOAD = struct.Struct("<IIBH")
+FETCH_END_PAYLOAD = struct.Struct("<BHH")
+
+# Must match LogRecord_t in common/log_record.h.
+LOG_RECORD = struct.Struct("<IHBB4sI")
+
+# Bits in UartStatusPayload_t.flags.
+OBC_FLAG_TIME_VALID = 1 << 7
+
+VOLUME_PAYLOAD = 0
+VOLUME_HK = 1
+
+LOG_RECORD_TYPE_TELEMETRY = 0
+LOG_RECORD_TYPE_BOOT = 1
+LOG_RECORD_TYPE_EVENT = 2
+LOG_RECORD_TYPE_SURVIVAL = 3
+
 
 
 class MessageType(IntEnum):
@@ -27,6 +46,10 @@ class MessageType(IntEnum):
     PAYLOAD = 0x02
     BATTERY = 0x03
     AUTO_STATUS = 0x04
+    SET_TIME = 0x05
+    FETCH = 0x06
+    FETCH_DATA = 0x07
+    FETCH_END = 0x08
     DEBUG_TEXT = 0x70
     ERROR = 0xFF
 
@@ -72,6 +95,7 @@ class UartStatusPayload:
     payload_online: bool
     eps_online: bool
     sd_state: int
+    flags: int
     dropped_frames: int
     collector_overruns: int
     payload_i2c_errors: int
@@ -79,6 +103,10 @@ class UartStatusPayload:
     payload_crc_failures: int
     eps_crc_failures: int
     sd_error_count: int
+
+    @property
+    def time_valid(self) -> bool:
+        return bool(self.flags & OBC_FLAG_TIME_VALID)
 
 
 def timestamp_ms() -> int:
@@ -244,6 +272,7 @@ def decode_status(frame: Frame) -> UartStatusPayload:
         payload_online=bool(values[4]),
         eps_online=bool(values[5]),
         sd_state=values[6],
+        flags=values[7],
         dropped_frames=values[8],
         collector_overruns=values[9],
         payload_i2c_errors=values[10],
@@ -256,3 +285,70 @@ def decode_status(frame: Frame) -> UartStatusPayload:
 
 def decode_debug_text(frame: Frame) -> str:
     return frame.payload.decode("utf-8", errors="replace")
+
+
+@dataclass(frozen=True)
+class LogRecord:
+    epoch_s: int
+    sensor_id: int
+    type: int
+    len: int
+    value: bytes
+    crc32: int
+
+
+@dataclass(frozen=True)
+class FetchEnd:
+    status: int
+    record_count: int
+    probe_count: int
+
+
+def encode_set_time(epoch_s: int) -> bytes:
+    """SET_TIME payload. Idempotent on the OBC side."""
+    if not 0 <= epoch_s <= 0xFFFFFFFF:
+        raise ValueError("epoch must fit in uint32")
+    return SET_TIME_PAYLOAD.pack(epoch_s)
+
+
+def encode_fetch(from_epoch_s: int, to_epoch_s: int, volume: int,
+                 max_records: int = 0) -> bytes:
+    """FETCH request payload. Range is inclusive."""
+    if from_epoch_s > to_epoch_s:
+        raise ValueError("from must not be later than to")
+    if volume not in (VOLUME_PAYLOAD, VOLUME_HK):
+        raise ValueError("volume must be 0 (payload) or 1 (hk)")
+    return FETCH_PAYLOAD.pack(from_epoch_s, to_epoch_s, volume, max_records)
+
+
+def decode_fetch_records(frame: Frame) -> list[LogRecord]:
+    """One FETCH_DATA frame carries up to four whole 16-byte records."""
+    if len(frame.payload) % LOG_RECORD.size != 0:
+        raise ValueError(
+            f"fetch frame has {len(frame.payload)} bytes; "
+            f"expected a multiple of {LOG_RECORD.size}"
+        )
+
+    records = []
+    for offset in range(0, len(frame.payload), LOG_RECORD.size):
+        values = LOG_RECORD.unpack_from(frame.payload, offset)
+        records.append(LogRecord(*values))
+    return records
+
+
+def decode_fetch_end(frame: Frame) -> FetchEnd:
+    if len(frame.payload) != FETCH_END_PAYLOAD.size:
+        raise ValueError(
+            f"fetch-end frame has {len(frame.payload)} bytes; "
+            f"expected {FETCH_END_PAYLOAD.size}"
+        )
+    return FetchEnd(*FETCH_END_PAYLOAD.unpack(frame.payload))
+
+
+def record_crc_is_valid(record: LogRecord) -> bool:
+    """Recompute the CRC over the first 12 bytes, as Task_SD_Logger does."""
+    body = LOG_RECORD.pack(
+        record.epoch_s, record.sensor_id, record.type,
+        record.len, record.value, 0,
+    )[: LOG_RECORD.size - 4]
+    return (zlib.crc32(body) & 0xFFFFFFFF) == record.crc32

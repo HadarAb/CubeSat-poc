@@ -27,6 +27,10 @@ extern "C" {
 #define UART_MSG_PAYLOAD             0x02u
 #define UART_MSG_BATTERY             0x03u
 #define UART_MSG_AUTO_STATUS         0x04u
+#define UART_MSG_SET_TIME            0x05u
+#define UART_MSG_FETCH               0x06u
+#define UART_MSG_FETCH_DATA          0x07u
+#define UART_MSG_FETCH_END           0x08u
 #define UART_MSG_SIM_SET             0x40u
 #define UART_MSG_SIM_GET             0x41u
 #define UART_MSG_SIM_LIST            0x42u
@@ -40,6 +44,11 @@ extern "C" {
 #define UART_STATUS_CRC_ERROR        0x03u
 #define UART_STATUS_UNKNOWN_MESSAGE  0x80u
 #define UART_STATUS_BAD_REQUEST      0x81u
+#define UART_STATUS_NOT_FOUND        0x82u
+
+// Bits for UartStatusPayload_t.flags
+#define OBC_FLAG_TIME_VALID      (1u << 7)
+// bits 0..3 are the task-alive mask from Phase 5
 
 #define UART_SIM_STATUS_OK           0x00u
 #define UART_SIM_STATUS_BAD_REQUEST  0x01u
@@ -86,7 +95,7 @@ typedef struct __attribute__((packed))
     uint8_t payload_online;
     uint8_t eps_online;
     uint8_t sd_state;
-    uint8_t reserved;
+    uint8_t flags;              // was reserved
     uint32_t dropped_frames;
     uint32_t collector_overruns;
     uint32_t payload_i2c_errors;
@@ -130,6 +139,29 @@ typedef struct __attribute__((packed))
     uint8_t value[VT_VALUE_LEN];
 } UartSimAckPayload_t;
 
+// SET_TIME request: Unix epoch seconds. Idempotent.
+typedef struct __attribute__((packed))
+{
+    uint32_t epoch_s;
+} UartSetTimePayload_t;
+
+// FETCH request: inclusive epoch range plus which directory to search.
+typedef struct __attribute__((packed))
+{
+    uint32_t from_epoch_s;
+    uint32_t to_epoch_s;
+    uint8_t volume;             // 0 = payload, 1 = hk
+    uint16_t max_records;       // 0 = no limit
+} UartFetchPayload_t;
+
+// FETCH_END: terminates a fetch stream and reports the demo statistic.
+typedef struct __attribute__((packed))
+{
+    uint8_t status;
+    uint16_t record_count;
+    uint16_t probe_count;
+} UartFetchEndPayload_t;
+
 /*
  * One decoded, CRC-valid UART message. This is an in-memory object used by
  * both nodes after the shared parser removes the wire header and CRC.
@@ -158,6 +190,12 @@ static_assert(sizeof(UartSimSetPayload_t) == 18u,
               "UartSimSetPayload_t wire layout must stay 18 bytes");
 static_assert(sizeof(UartSimGetPayload_t) == 8u,
               "UartSimGetPayload_t wire layout must stay 8 bytes");
+static_assert(sizeof(UartSetTimePayload_t) == 4u,
+              "UartSetTimePayload_t wire layout must stay 4 bytes");
+static_assert(sizeof(UartFetchPayload_t) == 11u,
+              "UartFetchPayload_t wire layout must stay 11 bytes");
+static_assert(sizeof(UartFetchEndPayload_t) == 5u,
+              "UartFetchEndPayload_t wire layout must stay 5 bytes");
 static_assert(sizeof(UartSimAckPayload_t) == 24u,
               "UartSimAckPayload_t wire layout must stay 24 bytes");
 #else
@@ -171,6 +209,12 @@ _Static_assert(sizeof(UartSimSetPayload_t) == 18u,
                "UartSimSetPayload_t wire layout must stay 18 bytes");
 _Static_assert(sizeof(UartSimGetPayload_t) == 8u,
                "UartSimGetPayload_t wire layout must stay 8 bytes");
+_Static_assert(sizeof(UartSetTimePayload_t) == 4u,
+               "UartSetTimePayload_t wire layout must stay 4 bytes");
+_Static_assert(sizeof(UartFetchPayload_t) == 11u,
+               "UartFetchPayload_t wire layout must stay 11 bytes");
+_Static_assert(sizeof(UartFetchEndPayload_t) == 5u,
+               "UartFetchEndPayload_t wire layout must stay 5 bytes");
 _Static_assert(sizeof(UartSimAckPayload_t) == 24u,
                "UartSimAckPayload_t wire layout must stay 24 bytes");
 #endif
