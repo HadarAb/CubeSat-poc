@@ -8,6 +8,7 @@
 #include "cmsis_os2.h" // osKernel, osDelay, osMutex
 #include "../../common/vtable/vtable.h" // VTable_HashName
 #include "../Core/Inc/rtc.h" // RTC_get_epoch(), RTC_get_boot_count()
+#include "../Power/task_watch.hpp"
 
 #include <string.h> // memset
 #include <stdint.h>
@@ -446,6 +447,7 @@ void payload_collector_run()
 	//main loop when system is working
 	for (;;)
 	{
+		task_watch_checkin(TASK_WATCH_COLLECTOR);
 		next_check_ticks += check_period_ticks;
 		const bool schedule_available = SensorScheduleIsAvailable();
 		const uint32_t now_ms = HAL_GetTick();

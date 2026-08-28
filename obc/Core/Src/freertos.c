@@ -29,6 +29,8 @@
 #include "PayloadCollector.hpp"
 #include "../../../common/log_record.h"
 #include "SdLogger.hpp"
+#include "../Power/power_state.hpp"
+#include "../Power/task_watch.hpp"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -122,6 +124,8 @@ void MX_FREERTOS_Init(void) {
   /* USER CODE BEGIN Init */
 
 	PayloadCollector_Init();
+	power_state_init();
+	task_watch_init();
 
 	const osMutexAttr_t i2c_mtx_attributes = {
 	  .name = "i2c_mtx",
@@ -239,10 +243,18 @@ void StartTask_SD_Logger(void *argument)
 void StartTask_PowerMgmt(void *argument)
 {
   /* USER CODE BEGIN StartTask_PowerMgmt */
-  /* Infinite loop */
+	// Samples the EPS battery once per second and publishes the power state
   for(;;)
   {
-    osDelay(1);
+	  Snapshot snap;
+	  if (PayloadCollector_GetSnapshot(EPS_NODE_ID, &snap)) {
+		  power_state_update(snap.data.battery_pct, snap.battery_valid);
+	  } else {
+		  power_state_update(0u, false);
+	  }
+
+	  task_watch_checkin(TASK_WATCH_POWER_MGMT);
+	  osDelay(1000);
   }
   /* USER CODE END StartTask_PowerMgmt */
 }
@@ -265,6 +277,7 @@ void StartTask_GroundComm(void *argument)
   for(;;)
   {
     ObcController_Process();
+    task_watch_checkin(TASK_WATCH_GROUND_COMM);
     osDelay(1);
   }
   /* USER CODE END StartTask_GroundComm */

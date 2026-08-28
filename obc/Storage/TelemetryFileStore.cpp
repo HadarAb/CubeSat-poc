@@ -1,4 +1,4 @@
-/* Owns telemetry files and calls SessionStore for persistent metadata. */
+// Owns telemetry files and calls SessionStore for persistent metadata.
 #include "TelemetryFileStore.hpp"
 
 #include "SessionStore.hpp"
@@ -26,21 +26,21 @@ constexpr uint32_t MaximumFileIndex = 9999u;
  * shared filesystem. This lets both directories reuse one implementation.
  */
 struct DirectoryCtx_t {
-	const char* directory_path;   /* Directory name, e.g. "PAYLOAD" or "EPS" */
-	FIL active_file;              /* The currently open file object */
-	bool file_is_open;            /* True if active_file is open and ready to write */
-	bool session_initialized;     /* True if we have loaded metadata from SESSION.BIN */
-	uint32_t current_file_index;  /* The index (XXXX) of the currently open TLMXXXX.BIN */
-	uint32_t current_file_bytes;  /* How many bytes are currently written to active_file */
-	SessionMetadata_t session;    /* Metadata for this specific directory */
+	const char* directory_path; // Directory name, e.g. "PAYLOAD" or "EPS"
+	FIL active_file; // The currently open file object
+	bool file_is_open; // True if active_file is open and ready to write
+	bool session_initialized; // True if we have loaded metadata from SESSION.BIN
+	uint32_t current_file_index; // The index (XXXX) of the currently open TLMXXXX.BIN
+	uint32_t current_file_bytes; // How many bytes are currently written to active_file
+	SessionMetadata_t session; // Metadata for this specific directory
 };
 
-/* Instantiate two independent directory contexts for Payload and EPS. */
+// Instantiate two independent directory contexts for Payload and EPS.
 DirectoryCtx_t dir_payload = { "PAYLOAD", {}, false, false, 0u, 0u, {} };
 DirectoryCtx_t dir_eps     = { "EPS",     {}, false, false, 0u, 0u, {} };
 
-/* Accepts only the exact 8.3 filename TLM0001.BIN through TLM9999.BIN. */
-bool IsTelemetryFilename(const char* name, uint32_t* index)
+// Accepts only the exact 8.3 filename TLM0001.BIN through TLM9999.BIN.
+bool is_telemetry_filename(const char* name, uint32_t* index)
 {
     if ((name == nullptr)
     		|| (std::strlen(name) != 11u)
@@ -80,7 +80,7 @@ bool IsTelemetryFilename(const char* name, uint32_t* index)
  * e.g. If ctx->directory_path is "PAYLOAD", it formats as "PAYLOAD/TLM0001.BIN".
  * Note: size must be at least 20 to accommodate the directory prefix.
  */
-void MakeTelemetryFilename(DirectoryCtx_t* ctx, uint32_t index, char* filename, size_t size)
+void make_telemetry_filename(DirectoryCtx_t* ctx, uint32_t index, char* filename, size_t size)
 {
     std::snprintf(filename, size, "%s/TLM%04lu.BIN", ctx->directory_path, static_cast<unsigned long>(index));
 }
@@ -89,7 +89,7 @@ void MakeTelemetryFilename(DirectoryCtx_t* ctx, uint32_t index, char* filename, 
  * Finds the oldest and newest telemetry file indexes in ONE directory.
  * Requires the context pointer to know which directory to scan.
  */
-bool ScanFileIndexes(DirectoryCtx_t* ctx, uint32_t* lowest_index, uint32_t* highest_index)
+bool scan_file_indexes(DirectoryCtx_t* ctx, uint32_t* lowest_index, uint32_t* highest_index)
 {
     if ((lowest_index == nullptr) || (highest_index == nullptr)) {
         return false;
@@ -114,7 +114,7 @@ bool ScanFileIndexes(DirectoryCtx_t* ctx, uint32_t* lowest_index, uint32_t* high
         }
 
         uint32_t index = 0u;
-        if (!IsTelemetryFilename(info.fname, &index)) {
+        if (!is_telemetry_filename(info.fname, &index)) {
             continue;
         }
 
@@ -135,7 +135,7 @@ bool ScanFileIndexes(DirectoryCtx_t* ctx, uint32_t* lowest_index, uint32_t* high
  * Converts FatFs free clusters to a byte count.
  * NOTE: free space is card-wide and shared by both directories.
  */
-bool GetFreeBytes(DirectoryCtx_t* ctx, uint64_t* free_bytes)
+bool get_free_bytes(DirectoryCtx_t* ctx, uint64_t* free_bytes)
 {
     if (free_bytes == nullptr) {
         return false;
@@ -160,11 +160,11 @@ bool GetFreeBytes(DirectoryCtx_t* ctx, uint64_t* free_bytes)
  * Deletes the oldest closed telemetry files in THIS directory until space is freed.
  * Note both directories draw on the same shared free space.
  */
-bool EnsureSpaceForNewFile(DirectoryCtx_t* ctx)
+bool ensure_space_for_new_file(DirectoryCtx_t* ctx)
 {
     for (;;) {
         uint64_t free_bytes = 0u;
-        if (!GetFreeBytes(ctx, &free_bytes)) {
+        if (!get_free_bytes(ctx, &free_bytes)) {
             return false;
         }
         if (free_bytes >= SpaceRequiredForNewFile) {
@@ -173,7 +173,7 @@ bool EnsureSpaceForNewFile(DirectoryCtx_t* ctx)
 
         uint32_t lowest_index = 0u;
         uint32_t highest_index = 0u;
-        if (!ScanFileIndexes(ctx, &lowest_index, &highest_index)) {
+        if (!scan_file_indexes(ctx, &lowest_index, &highest_index)) {
             return false;
         }
         (void)highest_index;
@@ -185,7 +185,7 @@ bool EnsureSpaceForNewFile(DirectoryCtx_t* ctx)
 
         // Increased array size to 16 (was 13) to fit prefix like "0:/TLM0001.BIN"
         char filename[16] = {};
-        MakeTelemetryFilename(ctx, lowest_index, filename, sizeof(filename));
+        make_telemetry_filename(ctx, lowest_index, filename, sizeof(filename));
         if (f_unlink(filename) != FR_OK) {
             return false;
         }
@@ -195,7 +195,7 @@ bool EnsureSpaceForNewFile(DirectoryCtx_t* ctx)
 /*
  * Loads saved metadata from the directory's unique SESSION.BIN to determine next index.
  */
-bool InitializeSession(DirectoryCtx_t* ctx)
+bool initialize_session(DirectoryCtx_t* ctx)
 {
     SessionMetadata_t loaded = {};
     bool loaded_valid = false;
@@ -207,7 +207,7 @@ bool InitializeSession(DirectoryCtx_t* ctx)
 
     uint32_t lowest_index = 0u;
     uint32_t highest_index = 0u;
-    if (!ScanFileIndexes(ctx, &lowest_index, &highest_index)) {
+    if (!scan_file_indexes(ctx, &lowest_index, &highest_index)) {
         return false;
     }
     (void)lowest_index;
@@ -243,11 +243,11 @@ bool InitializeSession(DirectoryCtx_t* ctx)
 /*
  * Re-scans file indexes on this specific directory.
  */
-bool RefreshNextFileIndex(DirectoryCtx_t* ctx)
+bool refresh_next_file_index(DirectoryCtx_t* ctx)
 {
     uint32_t lowest_index = 0u;
     uint32_t highest_index = 0u;
-    if (!ScanFileIndexes(ctx, &lowest_index, &highest_index)) {
+    if (!scan_file_indexes(ctx, &lowest_index, &highest_index)) {
         return false;
     }
 
@@ -263,7 +263,7 @@ bool RefreshNextFileIndex(DirectoryCtx_t* ctx)
 /*
  * Closes the previous file on this directory and creates the next one.
  */
-bool OpenNewTelemetryFile(DirectoryCtx_t* ctx)
+bool open_new_telemetry_file(DirectoryCtx_t* ctx)
 {
 	if (ctx->file_is_open) {
 		const FRESULT close_result = f_close(&ctx->active_file);
@@ -275,7 +275,7 @@ bool OpenNewTelemetryFile(DirectoryCtx_t* ctx)
 		}
 	}
 
-	if (!EnsureSpaceForNewFile(ctx) || !RefreshNextFileIndex(ctx)) {
+	if (!ensure_space_for_new_file(ctx) || !refresh_next_file_index(ctx)) {
 		return false;
 	}
 	if ((ctx->session.next_file_index == 0u) || (ctx->session.next_file_index > MaximumFileIndex)) {
@@ -286,7 +286,7 @@ bool OpenNewTelemetryFile(DirectoryCtx_t* ctx)
 
 	// Buffer size 32 to fit directory prefix
 	char filename[32] = {};
-	MakeTelemetryFilename(ctx, new_index, filename, sizeof(filename));
+	make_telemetry_filename(ctx, new_index, filename, sizeof(filename));
 
 	if (f_open(&ctx->active_file, filename, FA_CREATE_NEW | FA_WRITE) != FR_OK) {
 		return false;
@@ -315,23 +315,23 @@ bool OpenNewTelemetryFile(DirectoryCtx_t* ctx)
  * Internal helper: prepares one directory, loads its independent
  * metadata, and opens its current telemetry file.
  */
-static bool ConnectDirectory(DirectoryCtx_t* ctx)
+static bool connect_directory(DirectoryCtx_t* ctx)
 {
 	if (ctx->session_initialized) {
-		if (!RefreshNextFileIndex(ctx)) {
+		if (!refresh_next_file_index(ctx)) {
 			return false;
 		}
-	} else if (!InitializeSession(ctx)) {
+	} else if (!initialize_session(ctx)) {
 		return false;
 	}
 
-	return OpenNewTelemetryFile(ctx);
+	return open_new_telemetry_file(ctx);
 }
 
 /*
  * Internal helper: safely closes open files for a single directory.
  */
-static void DisconnectDirectory(DirectoryCtx_t* ctx)
+static void disconnect_directory(DirectoryCtx_t* ctx)
 {
 	if (ctx->file_is_open) {
 		(void)f_close(&ctx->active_file);
@@ -362,8 +362,8 @@ bool TelemetryFileStore_Connect(void)
     }
 
     // Connect the contexts (this will load metadata and open files inside the directories)
-    bool payload_ok = ConnectDirectory(&dir_payload);
-    bool eps_ok = ConnectDirectory(&dir_eps);
+    bool payload_ok = connect_directory(&dir_payload);
+    bool eps_ok = connect_directory(&dir_eps);
 
     return (payload_ok && eps_ok);
 }
@@ -373,8 +373,8 @@ bool TelemetryFileStore_Connect(void)
  */
 void TelemetryFileStore_Disconnect(void)
 {
-	DisconnectDirectory(&dir_payload);
-	DisconnectDirectory(&dir_eps);
+	disconnect_directory(&dir_payload);
+	disconnect_directory(&dir_eps);
 
     // Unmount the single file system
     (void)f_mount(nullptr, "", 0u);
@@ -395,8 +395,8 @@ struct RouteEntry_t {
  * The routing logic itself is closed for modification.
  */
 static const RouteEntry_t RoutingTable[] = {
-    { 0x02u, &dir_payload }, /* PAYLOAD_NODE_ID */
-    { 0x03u, &dir_eps }      /* EPS_NODE_ID */
+    { 0x02u, &dir_payload }, // PAYLOAD_NODE_ID
+    { 0x03u, &dir_eps } // EPS_NODE_ID
 };
 
 /*
@@ -404,7 +404,7 @@ static const RouteEntry_t RoutingTable[] = {
  * Extracts the Node ID from the high byte of the 16-bit sensor_id (defined in log_record.h).
  * Returns nullptr if the node is unknown.
  */
-static DirectoryCtx_t* RouteRecord(uint16_t sensor_id)
+static DirectoryCtx_t* route_record(uint16_t sensor_id)
 {
     // Extract the Node ID (top 8 bits) from the sensor_id
     const uint8_t node_id = static_cast<uint8_t>(sensor_id >> 8u);
@@ -444,8 +444,8 @@ bool TelemetryFileStore_Write(const LogRecord_t* records, uint32_t record_count)
     // Process the mixed batch record by record
     for (uint32_t i = 0u; i < record_count; ++i) {
 
-        // RouteRecord examines the top 8 bits to resolve the target directory (Payload or EPS)
-    	DirectoryCtx_t* ctx = RouteRecord(records[i].sensor_id);
+        // route_record examines the top 8 bits to resolve the target directory (Payload or EPS)
+    	DirectoryCtx_t* ctx = route_record(records[i].sensor_id);
 
         // Handle unknown sources: Alert via UART and skip the record
         if (ctx == nullptr) {
@@ -470,7 +470,7 @@ bool TelemetryFileStore_Write(const LogRecord_t* records, uint32_t record_count)
         // File size management (Rotation)
         // Check if adding this 16-byte record will exceed the 1 MiB limit
         if ((ctx->current_file_bytes + sizeof(LogRecord_t)) > TelemetryFileSizeBytes) {
-            if (!OpenNewTelemetryFile(ctx)) {
+            if (!open_new_telemetry_file(ctx)) {
                 overall_success = false;
                 continue; // Failed to rotate file, skip this record
             }

@@ -11,6 +11,7 @@
 #include "../../common/uart/uart_protocol.h"
 #include "PayloadCollector.hpp"
 #include "../Storage/SdLogger.hpp"
+#include "../Power/task_watch.hpp"
 
 /*
  * Dev 1 owns these implementations. Weak references let this branch build
@@ -142,6 +143,9 @@ UartStatusPayload_t BuildStatusPayload(uint8_t power_state)
         status.payload_crc_failures = collector.payload_crc_failures;
         status.eps_crc_failures = collector.eps_crc_failures;
     }
+
+    // Inject the task_watch bitmask into the reserved byte for ground visibility
+    status.reserved = static_cast<uint8_t>(task_watch_get_mask() & 0xFFu);
 
     return status;
 }
