@@ -21,6 +21,7 @@
 #include "cmsis_os.h"
 #include "fatfs.h"
 #include "i2c.h"
+#include "iwdg.h"
 #include "rtc.h"
 #include "spi.h"
 #include "usart.h"
@@ -103,6 +104,7 @@ int main(void)
   MX_FATFS_Init();
   MX_RTC_Init();
   MX_SPI1_Init();
+  MX_IWDG_Init();
   /* USER CODE BEGIN 2 */
 
   // save the reset flags to DR3(Data Register) and clear them from hardware

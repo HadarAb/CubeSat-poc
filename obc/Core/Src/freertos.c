@@ -53,12 +53,12 @@ typedef StaticSemaphore_t osStaticMutexDef_t;
 /* USER CODE BEGIN Variables */
 osMutexId_t i2c_mtxHandle;
 /* USER CODE END Variables */
-/* Definitions for defaultTask */
-osThreadId_t defaultTaskHandle;
-const osThreadAttr_t defaultTask_attributes = {
-  .name = "defaultTask",
+/* Definitions for Task_Supervisor */
+osThreadId_t Task_SupervisorHandle;
+const osThreadAttr_t Task_Supervisor_attributes = {
+  .name = "Task_Supervisor",
   .stack_size = 128 * 4,
-  .priority = (osPriority_t) osPriorityNormal,
+  .priority = (osPriority_t) osPriorityHigh,
 };
 /* Definitions for Task_PayloadCol */
 osThreadId_t Task_PayloadColHandle;
@@ -107,7 +107,7 @@ const osMutexAttr_t mtx_spi_attributes = {
 
 /* USER CODE END FunctionPrototypes */
 
-void StartDefaultTask(void *argument);
+void StartTask_Supervisor(void *argument);
 void StartTask_PayloadCol(void *argument);
 void StartTask_SD_Logger(void *argument);
 void StartTask_PowerMgmt(void *argument);
@@ -161,8 +161,8 @@ void MX_FREERTOS_Init(void) {
   /* USER CODE END RTOS_QUEUES */
 
   /* Create the thread(s) */
-  /* creation of defaultTask */
-  defaultTaskHandle = osThreadNew(StartDefaultTask, NULL, &defaultTask_attributes);
+  /* creation of Task_Supervisor */
+  Task_SupervisorHandle = osThreadNew(StartTask_Supervisor, NULL, &Task_Supervisor_attributes);
 
   /* creation of Task_PayloadCol */
   Task_PayloadColHandle = osThreadNew(StartTask_PayloadCol, NULL, &Task_PayloadCol_attributes);
@@ -186,22 +186,22 @@ void MX_FREERTOS_Init(void) {
 
 }
 
-/* USER CODE BEGIN Header_StartDefaultTask */
+/* USER CODE BEGIN Header_StartTask_Supervisor */
 /**
-  * @brief  Function implementing the defaultTask thread.
+  * @brief  Function implementing the Task_Supervisor thread.
   * @param  argument: Not used
   * @retval None
   */
-/* USER CODE END Header_StartDefaultTask */
-void StartDefaultTask(void *argument)
+/* USER CODE END Header_StartTask_Supervisor */
+void StartTask_Supervisor(void *argument)
 {
-  /* USER CODE BEGIN StartDefaultTask */
+  /* USER CODE BEGIN StartTask_Supervisor */
   /* Infinite loop */
   for(;;)
   {
     osDelay(1);
   }
-  /* USER CODE END StartDefaultTask */
+  /* USER CODE END StartTask_Supervisor */
 }
 
 /* USER CODE BEGIN Header_StartTask_PayloadCol */
