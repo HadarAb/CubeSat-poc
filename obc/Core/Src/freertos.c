@@ -27,6 +27,7 @@
 /* USER CODE BEGIN Includes */
 #include "ObcController.hpp"
 #include "PayloadCollector.hpp"
+#include "iwdg.h"
 #include "../../../common/log_record.h"
 #include "SdLogger.hpp"
 #include "../Power/power_state.hpp"
@@ -41,6 +42,11 @@ typedef StaticSemaphore_t osStaticMutexDef_t;
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
+
+#define TASK_SUPERVISOR_CHECK_TICKS 2000u
+
+/* Set to 1 only for the on-board IWDG reset demonstration, then restore to 0. */
+#define WATCHDOG_TEST_FREEZE_GROUND_COMM 0u
 
 /* USER CODE END PD */
 
@@ -196,10 +202,19 @@ void MX_FREERTOS_Init(void) {
 void StartTask_Supervisor(void *argument)
 {
   /* USER CODE BEGIN StartTask_Supervisor */
-  /* Infinite loop */
+  (void)argument;
+
+  // IWDG is configured for roughly 32 seconds. Every two seconds, consume a
+  // complete heartbeat window and refresh only when all four worker tasks have
+  // made progress. Missing bits are deliberately not cleared, giving a delayed
+  // healthy task the rest of the hardware watchdog interval to report.
   for(;;)
   {
-    osDelay(1);
+    osDelay(TASK_SUPERVISOR_CHECK_TICKS);
+
+    if (task_watch_all_alive_and_clear()) {
+      (void)HAL_IWDG_Refresh(&hiwdg);
+    }
   }
   /* USER CODE END StartTask_Supervisor */
 }
@@ -269,11 +284,18 @@ void StartTask_PowerMgmt(void *argument)
 void StartTask_GroundComm(void *argument)
 {
   /* USER CODE BEGIN StartTask_GroundComm */
-  /* Drains the USART2 RX ring buffer, answers ground-station requests, and checks
-     the automatic-status schedule. Before the RTOS this ran from main(), which
-     osKernelStart() made unreachable -- without this call the OBC transmits its boot
-     banner and then never answers a command. */
-  /* Infinite loop */
+  (void)argument;
+
+#if WATCHDOG_TEST_FREEZE_GROUND_COMM
+  // Deliberately stop one worker so the supervisor withholds IWDG refreshes.
+  (void)osThreadSuspend(osThreadGetId());
+#endif
+
+  // Drains the USART2 RX ring buffer, answers ground-station requests, and checks
+  // the automatic-status schedule. Before the RTOS this ran from main(), which
+  // osKernelStart() made unreachable -- without this call the OBC transmits its boot
+  // banner and then never answers a command.
+  // Infinite loop
   for(;;)
   {
     ObcController_Process();

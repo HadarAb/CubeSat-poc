@@ -196,8 +196,6 @@ extern "C" void SdLogger_Task(void* argument)
     (void)try_bring_online(now);
 
     for (;;) {
-    	task_watch_checkin(TASK_WATCH_SD_LOGGER);
-
         //checks if we are connected if not check when we need to try to connect again
         now = osKernelGetTickCount();
         if ((logger_state != SD_LOGGER_READY) && deadline_reached(now, next_retry_tick)) {
@@ -227,6 +225,9 @@ extern "C" void SdLogger_Task(void* argument)
         if ((batch_count != 0u) && deadline_reached(now, flush_deadline)) {
             (void)flush_batch(now);
         }
+
+        // Report only after the queue/storage iteration made forward progress.
+        task_watch_checkin(TASK_WATCH_SD_LOGGER);
     }
 }
 
@@ -234,4 +235,3 @@ extern "C" uint32_t SdLogger_GetFlushCount(void)
 {
     return flush_count;
 }
-

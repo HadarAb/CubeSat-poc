@@ -144,8 +144,8 @@ UartStatusPayload_t BuildStatusPayload(uint8_t power_state)
         status.eps_crc_failures = collector.eps_crc_failures;
     }
 
-    // Inject the task_watch bitmask into the reserved byte for ground visibility
-    status.reserved = static_cast<uint8_t>(task_watch_get_mask() & 0xFFu);
+    // Inject the task-watch bitmask into status flags for ground visibility.
+    status.flags |= static_cast<uint8_t>(task_watch_get_mask() & 0x0Fu);
 
     return status;
 }

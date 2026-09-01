@@ -1,4 +1,4 @@
-// Task liveness bitmask. Groundwork for the IWDG supervisor, not yet armed
+// Task liveness bitmask consumed by the IWDG supervisor.
 #pragma once
 
 #include <stdbool.h>
@@ -22,11 +22,10 @@ void task_watch_init(void);
 // Each supervised task calls this once per loop pass
 void task_watch_checkin(uint32_t task_bit);
 
-// True when every supervised task has checked in since the last clear
-bool task_watch_all_alive(void);
-
-// Clear the accumulated bits. The supervisor calls this after a successful check
-void task_watch_clear(void);
+// Atomically test for a complete supervision window. When all tasks have
+// checked in, clear the accumulated bits and return true. When any task is
+// missing, keep the reported bits and return false.
+bool task_watch_all_alive_and_clear(void);
 
 // Read-only bitmask, for reporting over UART
 uint32_t task_watch_get_mask(void);
