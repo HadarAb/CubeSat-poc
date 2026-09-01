@@ -50,10 +50,10 @@ except ImportError:
 
 try:
     from .plotting import plot_records
-    from .sensors import decode_value, describe_sensor
+    from .sensors import SENSOR_ID_RESET_CAUSE, decode_value, describe_reset_flags, describe_sensor
 except ImportError:
     from plotting import plot_records
-    from sensors import decode_value, describe_sensor
+    from sensors import SENSOR_ID_RESET_CAUSE, decode_value, describe_reset_flags, describe_sensor
 
 
 BAUD_RATE = 115200
@@ -372,20 +372,23 @@ def render_records(records: list, last_sync_epoch: int | None) -> None:
         if last_sync_epoch is not None and record.epoch_s < last_sync_epoch:
             marks.append("PRE-SYNC")
 
-        shown = f"{value:.3f}" if isinstance(value, float) else str(value)
+        shown = describe_reset_flags(value) if record.sensor_id == SENSOR_ID_RESET_CAUSE else f"{value:.3f}" if isinstance(value, float) else str(value)
         print(f"  {when:<20} {node:<8} {key:<8} {shown:>14}  {' '.join(marks)}")
 
 
 def do_fetch(station: GroundStation, args: list[str]) -> None:
     if len(args) < 2:
-        print("usage: fetch <from> <to> [payload|hk] [--plot]")
+        print("usage: fetch <from> <to> [payload|hk] [--boot] [--plot]")
         return
 
     plot = "--plot" in args
-    args = [a for a in args if a != "--plot"]
+    boot_only = "--boot" in args
+    args = [a for a in args if a not in {"--boot", "--plot"}]
 
     volume = VOLUME_PAYLOAD
-    if len(args) >= 3:
+    if boot_only:
+        volume = VOLUME_HK
+    elif len(args) >= 3:
         volume = VOLUME_HK if args[2].lower() == "hk" else VOLUME_PAYLOAD
 
     from_epoch = parse_datetime(args[0])
@@ -395,7 +398,11 @@ def do_fetch(station: GroundStation, args: list[str]) -> None:
     records, end = station.fetch(from_epoch, to_epoch, volume)
     elapsed = time.monotonic() - started
 
+    if boot_only:
+        records = [record for record in records if record.type == LOG_RECORD_TYPE_BOOT]
+
     label = "hk" if volume == VOLUME_HK else "payload"
+    label = f"{label} boot" if boot_only else label
     print(f"[FETCH {label}] {len(records)} records in {elapsed:.3f}s")
     print(f"  probes: {end.probe_count}  (linear scan would be {end.record_count})")
     render_records(records, station.last_sync_epoch)
@@ -425,7 +432,7 @@ def interactive_loop(station: GroundStation) -> None:
             print("status  - request OBC and I2C status")
             print("payload - request the latest cached telemetry")
             print("battery - request the latest battery percentage")
-            print("fetch   - fetch <from> <to> [payload|hk] [--plot]")
+            print("fetch   - fetch <from> <to> [payload|hk] [--boot] [--plot]")
             print("time    - time sync, push this PC's clock to the OBC")
             print("quit    - close the ground station")
             continue

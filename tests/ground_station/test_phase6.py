@@ -1,12 +1,16 @@
+import io
 import unittest
+from contextlib import redirect_stdout
 
+from ground_station.ground_station import do_fetch
 from ground_station.protocol import (
-    FETCH_END_PAYLOAD, LOG_RECORD, MessageType,
+    FETCH_END_PAYLOAD, LOG_RECORD, FetchEnd, MessageType, VOLUME_HK,
     decode_fetch_end, decode_fetch_records, encode_fetch, encode_set_time,
     record_crc_is_valid, Frame,
 )
 from ground_station.sensors import (
-    describe_sensor, find_hash_collisions, vtable_hash_name,
+    SENSOR_ID_RESET_CAUSE, describe_reset_flags, describe_sensor,
+    find_hash_collisions, vtable_hash_name,
 )
 
 
@@ -39,6 +43,29 @@ class Phase6Tests(unittest.TestCase):
     def test_boot_marker_resolves(self):
         node, key, _ = describe_sensor(0x03FF)
         self.assertEqual((node, key), ("OBC", "BOOT"))
+
+    def test_reset_cause_marker_resolves(self):
+        node, key, _ = describe_sensor(SENSOR_ID_RESET_CAUSE)
+        self.assertEqual((node, key), ("OBC", "RESET"))
+
+    def test_reset_flags_are_readable(self):
+        flags = (1 << 26) | (1 << 29)
+        self.assertEqual(describe_reset_flags(flags), "RESET_PIN|IWDG")
+
+    def test_boot_fetch_uses_housekeeping_volume(self):
+        class Station:
+            last_sync_epoch = None
+            requested_volume = None
+
+            def fetch(self, from_epoch, to_epoch, volume):
+                self.requested_volume = volume
+                return [], FetchEnd(0, 0, 0)
+
+        station = Station()
+        with redirect_stdout(io.StringIO()):
+            do_fetch(station, ["100", "200", "payload", "--boot"])
+
+        self.assertEqual(station.requested_volume, VOLUME_HK)
 
     def test_hash_is_stable(self):
         # Guards against an accidental change to the C hash.

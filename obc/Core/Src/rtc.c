@@ -141,6 +141,15 @@ void HAL_RTC_MspDeInit(RTC_HandleTypeDef* rtcHandle)
 }
 
 /* USER CODE BEGIN 1 */
+// this function gets reset_flags , saves boot count and boot reason inside DR1 and DR2 for
+// later use .
+void RTC_record_boot(uint32_t reset_flags)
+{
+	HAL_RTCEx_BKUPWrite(&hrtc, RTC_BKP_DR3, reset_flags & RTC_RESET_FLAGS_MASK);
+
+	const uint32_t current_boot_count = HAL_RTCEx_BKUPRead(&hrtc, RTC_BKP_DR1);
+	HAL_RTCEx_BKUPWrite(&hrtc, RTC_BKP_DR1, current_boot_count + 1u);
+}
 
 uint32_t RTC_get_boot_count(void)
 {
@@ -187,4 +196,3 @@ uint32_t RTC_get_epoch(void)
 }
 
 /* USER CODE END 1 */
-

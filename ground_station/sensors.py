@@ -8,6 +8,8 @@ VT_NAME_LEN = 8
 
 PAYLOAD_NODE_ID = 0x02
 EPS_NODE_ID = 0x03
+SENSOR_ID_RESET_CAUSE = 0x03FE
+SENSOR_ID_BOOT = 0x03FF
 
 # Key name -> VtType, mirroring simulators/models.py.
 VT_TYPE_U32 = 0
@@ -60,7 +62,19 @@ def _build_reverse_map() -> dict[int, tuple[str, str, int]]:
 SENSOR_MAP = _build_reverse_map()
 
 # Reserved IDs written by the OBC itself, not by a node key.
-SENSOR_MAP[0x03FF] = ("OBC", "BOOT", VT_TYPE_U32)
+SENSOR_MAP[SENSOR_ID_RESET_CAUSE] = ("OBC", "RESET", VT_TYPE_U32)
+SENSOR_MAP[SENSOR_ID_BOOT] = ("OBC", "BOOT", VT_TYPE_U32)
+
+RESET_FLAG_NAMES = (
+    (1 << 24, "FIREWALL"),
+    (1 << 25, "OPTION_BYTES"),
+    (1 << 26, "RESET_PIN"),
+    (1 << 27, "POWER/BROWNOUT"),
+    (1 << 28, "SOFTWARE"),
+    (1 << 29, "IWDG"),
+    (1 << 30, "WWDG"),
+    (1 << 31, "LOW_POWER"),
+)
 
 
 def describe_sensor(sensor_id: int) -> tuple[str, str, int]:
@@ -80,6 +94,12 @@ def decode_value(raw: bytes, vt_type: int) -> float | int:
     if vt_type == VT_TYPE_I32:
         return struct.unpack("<i", raw[:4])[0]
     return struct.unpack("<I", raw[:4])[0]
+
+
+def describe_reset_flags(flags: int) -> str:
+    """Turn the STM32 RCC reset-flag mask stored by the OBC into readable names."""
+    names = [name for mask, name in RESET_FLAG_NAMES if flags & mask]
+    return "|".join(names) if names else "UNKNOWN"
 
 
 def find_hash_collisions() -> list[tuple[int, list[str]]]:

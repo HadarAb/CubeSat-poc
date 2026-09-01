@@ -36,12 +36,14 @@ extern RTC_HandleTypeDef hrtc;
 
 /* USER CODE BEGIN Private defines */
 #define RTC_MAGIC_TIME_VALID 0x54494D45u
+#define RTC_RESET_FLAGS_MASK (RCC_CSR_FWRSTF | RCC_CSR_OBLRSTF | RCC_CSR_PINRSTF | RCC_CSR_BORRSTF | RCC_CSR_SFTRSTF | RCC_CSR_IWDGRSTF | RCC_CSR_WWDGRSTF | RCC_CSR_LPWRRSTF)
 /* USER CODE END Private defines */
 
 void MX_RTC_Init(void);
 
 /* USER CODE BEGIN Prototypes */
 
+void RTC_record_boot(uint32_t reset_flags);
 uint32_t RTC_get_boot_count(void);
 uint32_t RTC_get_reset_flags(void);
 void RTC_set_last_epoch(uint32_t epoch);
@@ -54,4 +56,3 @@ uint32_t RTC_get_epoch(void);
 #endif
 
 #endif /* __RTC_H__ */
-

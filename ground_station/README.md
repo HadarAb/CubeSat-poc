@@ -19,8 +19,13 @@ Available interactive commands:
 - `status` requests OBC and I2C health information.
 - `payload` requests the latest CRC-valid payload cached by the OBC.
 - `battery` requests only the cached battery percentage.
+- `fetch <from> <to> payload` fetches payload records in an inclusive time range.
+- `fetch <from> <to> hk` fetches housekeeping records in an inclusive time range.
+- `fetch <from> <to> --boot` fetches housekeeping data and displays only boot-counter and reset-cause records.
 - `help` displays the command list.
 - `quit` closes the program.
+
+Reset causes are transferred as the STM32 reset-flag mask and displayed as readable names such as `IWDG`, `RESET_PIN`, `SOFTWARE`, or `POWER/BROWNOUT`.
 
 Each request is only a UART header plus CRC. The OBC replies with the same
 message type and the single fixed `UartPayload_t` layout.

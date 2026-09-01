@@ -66,6 +66,7 @@ uint32_t batch_count = 0u;
 uint32_t flush_deadline = 0u;
 uint32_t next_retry_tick = 0u;
 volatile uint32_t flush_count = 0u;
+bool boot_records_written = false;
 
 // check if we have to flush
 bool deadline_reached(uint32_t now, uint32_t deadline)
@@ -90,26 +91,38 @@ void go_offline(uint32_t now)
     set_logger_error();
 }
 
-/* Writes one boot marker so the ground station can see reboot gaps in the
- * telemetry stream. It goes through TelemetryFileStore_Write like any other
- * record, so the decoder needs no special case. Routed to the EPS directory
- * because a reboot is a housekeeping event, not payload data.
- */
-void write_boot_marker(void)
+// read boot flag save it on the SD and reset the register for later .
+// also turns true global verb that indicates that boot record was saved .
+// saves boot count and boot reson , so two records .
+bool write_boot_records(void)
 {
-    LogRecord_t record = {};
-
+    LogRecord_t records[2] = {};
+    // RTC == clock
+    const uint32_t epoch = RTC_get_epoch();
     const uint32_t boot_count = RTC_get_boot_count();
+    const uint32_t reset_flags = RTC_get_reset_flags();
 
-    record.epoch_s = RTC_get_epoch();
-    record.sensor_id = SENSOR_ID_BOOT;
-    record.type = LOG_RECORD_TYPE_BOOT;
-    record.len = sizeof(boot_count);
-    std::memcpy(record.value, &boot_count, sizeof(boot_count));
-    record.crc32 = Protocol_Crc32(
-        reinterpret_cast<const uint8_t*>(&record), LOG_RECORD_CRC_SIZE);
+    //saves the boot count
+    records[0].epoch_s = epoch;
+    records[0].sensor_id = SENSOR_ID_BOOT;
+    records[0].type = LOG_RECORD_TYPE_BOOT;
+    records[0].len = sizeof(boot_count);
+    std::memcpy(records[0].value, &boot_count, sizeof(boot_count));
+    records[0].crc32 = Protocol_Crc32(reinterpret_cast<const uint8_t*>(&records[0]), LOG_RECORD_CRC_SIZE);
+    //saves the boot reason
+    records[1].epoch_s = epoch;
+    records[1].sensor_id = SENSOR_ID_RESET_CAUSE;
+    records[1].type = LOG_RECORD_TYPE_BOOT;
+    records[1].len = sizeof(reset_flags);
+    std::memcpy(records[1].value, &reset_flags, sizeof(reset_flags));
+    records[1].crc32 = Protocol_Crc32(reinterpret_cast<const uint8_t*>(&records[1]), LOG_RECORD_CRC_SIZE);
 
-    (void)TelemetryFileStore_Write(&record, 1u);
+    if (!TelemetryFileStore_Write(records, 2u)) {
+        return false;
+    }
+
+    boot_records_written = true;
+    return true;
 }
 
 // Attempts to mount the card, recover session state, and open a new file.
@@ -122,8 +135,12 @@ bool try_bring_online(uint32_t now)
 
     logger_state = SD_LOGGER_READY;
 
-    // Record the reboot only after storage is confirmed writable.
-    write_boot_marker();
+    // tries to write boot record if it false it will return false .
+    // so some thing went wrong and you cant save it on SD .
+    if (!boot_records_written && !write_boot_records()) {
+        go_offline(now);
+        return false;
+    }
 
     return true;
 }
