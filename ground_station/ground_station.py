@@ -245,10 +245,14 @@ class GroundStation:
 
             if frame.msg_type == MessageType.FETCH_DATA:
                 records.extend(decode_fetch_records(frame))
+                deadline = time.monotonic() + FETCH_TIMEOUT_SECONDS
                 continue
 
             if frame.msg_type == MessageType.FETCH_END:
-                return records, decode_fetch_end(frame)
+                end = decode_fetch_end(frame)
+                if end.status not in (Status.OK, Status.NOT_FOUND):
+                    raise RuntimeError(f"OBC fetch error: {_status_name(end.status)}")
+                return records, end
 
 
 def _status_name(value: int) -> str:

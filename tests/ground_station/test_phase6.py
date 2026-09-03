@@ -2,9 +2,9 @@ import io
 import unittest
 from contextlib import redirect_stdout
 
-from ground_station.ground_station import do_fetch
+from ground_station.ground_station import GroundStation, do_fetch
 from ground_station.protocol import (
-    FETCH_END_PAYLOAD, LOG_RECORD, FetchEnd, MessageType, VOLUME_HK,
+    FETCH_END_PAYLOAD, LOG_RECORD, FetchEnd, MessageType, Status, VOLUME_HK,
     decode_fetch_end, decode_fetch_records, encode_fetch, encode_set_time,
     record_crc_is_valid, Frame,
 )
@@ -66,6 +66,29 @@ class Phase6Tests(unittest.TestCase):
             do_fetch(station, ["100", "200", "payload", "--boot"])
 
         self.assertEqual(station.requested_volume, VOLUME_HK)
+
+    def test_fetch_collects_data_until_fetch_end(self):
+        station = GroundStation(serial_port=None)
+        station.start = lambda: None
+        station._send = lambda frame: None
+        record = LOG_RECORD.pack(150, 0x0201, 0, 4, b"\x01\x00\x00\x00", 0)
+        station.response_queue.put(Frame(MessageType.FETCH_DATA, 1, 0, record))
+        station.response_queue.put(Frame(MessageType.FETCH_END, 1, 0, FETCH_END_PAYLOAD.pack(Status.OK, 1, 14)))
+
+        records, end = station.fetch(100, 200, 0)
+
+        self.assertEqual(len(records), 1)
+        self.assertEqual(records[0].epoch_s, 150)
+        self.assertEqual((end.record_count, end.probe_count), (1, 14))
+
+    def test_fetch_reports_storage_error(self):
+        station = GroundStation(serial_port=None)
+        station.start = lambda: None
+        station._send = lambda frame: None
+        station.response_queue.put(Frame(MessageType.FETCH_END, 1, 0, FETCH_END_PAYLOAD.pack(Status.STORAGE_ERROR, 0, 0)))
+
+        with self.assertRaisesRegex(RuntimeError, "STORAGE_ERROR"):
+            station.fetch(100, 200, 0)
 
     def test_hash_is_stable(self):
         # Guards against an accidental change to the C hash.

@@ -61,6 +61,9 @@ class Status(IntEnum):
     CRC_ERROR = 0x03
     UNKNOWN_MESSAGE = 0x80
     BAD_REQUEST = 0x81
+    NOT_FOUND = 0x82
+    STORAGE_ERROR = 0x83
+    BUSY = 0x84
 
 
 @dataclass(frozen=True)
