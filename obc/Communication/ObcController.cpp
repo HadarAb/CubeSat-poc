@@ -13,6 +13,8 @@
 #include "../Storage/SdLogger.hpp"
 #include "../Power/task_watch.hpp"
 
+#include <cstring>
+
 /*
  * Dev 1 owns these implementations. Weak references let this branch build
  * before the state and schedule modules are merged. Automatic status stays
@@ -222,6 +224,27 @@ void HandleRequest(const UartRequest_t& req)
         {
             const UartPayload_t payload = BuildPayload(EPS_NODE_ID);
             UartProtocol_SendFrame(req.msg_type, req.sequence, &payload, sizeof(payload));
+            break;
+        }
+
+        case UART_MSG_FETCH:
+        {
+            if (req.payload_length != sizeof(UartFetchPayload_t)) {
+                SendError(req.sequence, UART_STATUS_BAD_REQUEST);
+                break;
+            }
+
+            UartFetchPayload_t request = {};
+            std::memcpy(&request, req.payload, sizeof(request));
+
+            if ((request.from_epoch_s > request.to_epoch_s) || (request.volume > 1u)) {
+                SendError(req.sequence, UART_STATUS_BAD_REQUEST);
+                break;
+            }
+
+            if (SdLogger_RequestFetch(req.sequence, &request) == 0u) {
+                SendError(req.sequence, UART_STATUS_BUSY);
+            }
             break;
         }
 
