@@ -45,6 +45,8 @@ extern "C" {
 #define UART_STATUS_UNKNOWN_MESSAGE  0x80u
 #define UART_STATUS_BAD_REQUEST      0x81u
 #define UART_STATUS_NOT_FOUND        0x82u
+#define UART_STATUS_STORAGE_ERROR    0x83u
+#define UART_STATUS_BUSY             0x84u
 
 // Bits for UartStatusPayload_t.flags
 #define OBC_FLAG_TIME_VALID      (1u << 7)

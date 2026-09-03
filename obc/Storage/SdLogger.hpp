@@ -1,6 +1,8 @@
 // Single-owner FatFs telemetry logger used by Task_SD_Logger.
 #pragma once
 
+#include "../../common/uart/uart_protocol.h"
+
 #include <stdint.h>
 
 #ifdef __cplusplus
@@ -22,6 +24,9 @@ SdLoggerState_t SdLogger_GetState(void);
 
 uint32_t SdLogger_GetErrorCount(void);
 uint32_t SdLogger_GetFlushCount(void);
+
+// Queues one validated FETCH request for the SD Logger task. Returns 1 when accepted.
+uint8_t SdLogger_RequestFetch(uint16_t sequence, const UartFetchPayload_t* request);
 
 #ifdef __cplusplus
 }

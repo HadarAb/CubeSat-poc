@@ -39,6 +39,30 @@ struct DirectoryCtx_t {
 DirectoryCtx_t dir_payload = { "PAYLOAD", {}, false, false, 0u, 0u, {} };
 DirectoryCtx_t dir_eps     = { "EPS",     {}, false, false, 0u, 0u, {} };
 
+struct FetchCursor_t {
+    DirectoryCtx_t* directory;
+    FIL reader;
+    bool active;
+    bool reader_is_open;
+    bool first_match_found;
+    uint32_t next_file_index;
+    uint32_t highest_file_index;
+    uint32_t open_file_index;
+    uint32_t next_record_index;
+    uint32_t record_count;
+    uint32_t from_epoch_s;
+    uint32_t to_epoch_s;
+    uint16_t probe_count;
+};
+
+FetchCursor_t fetch_cursor = {};
+
+enum class OpenRangeFileResult : uint8_t {
+    Found,
+    End,
+    Error
+};
+
 // Accepts only the exact 8.3 filename TLM0001.BIN through TLM9999.BIN.
 bool is_telemetry_filename(const char* name, uint32_t* index)
 {
@@ -76,9 +100,11 @@ bool is_telemetry_filename(const char* name, uint32_t* index)
 }
 
 /*
+ * creates a file name just a sstring
  * Builds a telemetry filename WITH the directory prefix.
  * e.g. If ctx->directory_path is "PAYLOAD", it formats as "PAYLOAD/TLM0001.BIN".
  * Note: size must be at least 20 to accommodate the directory prefix.
+ *
  */
 void make_telemetry_filename(DirectoryCtx_t* ctx, uint32_t index, char* filename, size_t size)
 {
@@ -87,6 +113,8 @@ void make_telemetry_filename(DirectoryCtx_t* ctx, uint32_t index, char* filename
 
 /*
  * Finds the oldest and newest telemetry file indexes in ONE directory.
+ * there are two folders inside each folder there are bin files in each
+ * there are records
  * Requires the context pointer to know which directory to scan.
  */
 bool scan_file_indexes(DirectoryCtx_t* ctx, uint32_t* lowest_index, uint32_t* highest_index)
@@ -102,26 +130,31 @@ bool scan_file_indexes(DirectoryCtx_t* ctx, uint32_t* lowest_index, uint32_t* hi
     FILINFO info = {};
 
 	// Open the directory of the specific directory (Payload or EPS)
+    // and put it on directory verb on ram
 	FRESULT result = f_opendir(&directory, ctx->directory_path);
     if (result != FR_OK) {
         return false;
     }
 
     for (;;) {
+    	// take the next bin file
         result = f_readdir(&directory, &info);
         if ((result != FR_OK) || (info.fname[0] == '\0')) {
             break;
         }
 
         uint32_t index = 0u;
+        // take its name
         if (!is_telemetry_filename(info.fname, &index)) {
             continue;
         }
 
+        //save lowest index
         if ((*lowest_index == 0u) || (index < *lowest_index)) {
             *lowest_index = index;
         }
 
+        //save highest index
         if (index > *highest_index) {
             *highest_index = index;
         }
@@ -129,6 +162,170 @@ bool scan_file_indexes(DirectoryCtx_t* ctx, uint32_t* lowest_index, uint32_t* hi
 
     const FRESULT close_result = f_closedir(&directory);
     return (result == FR_OK) && (close_result == FR_OK);
+}
+
+// just close the cursor and reset some verbs
+bool close_fetch_reader(void)
+{
+	// is there a cursor to a file we already read ?
+    if (!fetch_cursor.reader_is_open) {
+        return true;
+    }
+
+    const FRESULT result = f_close(&fetch_cursor.reader);
+    fetch_cursor.reader_is_open = false;
+    fetch_cursor.open_file_index = 0u;
+    fetch_cursor.next_record_index = 0u;
+    fetch_cursor.record_count = 0u;
+    return result == FR_OK;
+}
+
+// seek record by index and put it in record verb you provided
+bool read_record_at(uint32_t record_index, LogRecord_t* record)
+{
+	// check is there a cursor
+    if ((record == nullptr) || !fetch_cursor.reader_is_open) {
+        return false;
+    }
+
+    // how much indexes we need to jump * record size
+    const FSIZE_t offset = static_cast<FSIZE_t>(record_index)
+    						* static_cast<FSIZE_t>(sizeof(LogRecord_t));
+
+    if (f_lseek(&fetch_cursor.reader, offset) != FR_OK) {
+        return false;
+    }
+
+    UINT bytes_read = 0u;
+    // read from the bin file exactly the file at the index
+    // put what we found inside record
+    return (f_read(&fetch_cursor.reader, record, sizeof(LogRecord_t), &bytes_read) == FR_OK)
+    				&& (bytes_read == sizeof(LogRecord_t));
+}
+
+// there is a global starting time (from_epoch)
+// this function seeks for the first record that its time is >= from_epoch
+// and start global verb and global offset to start from this file
+bool seek_to_first_requested_record(void)
+{
+    uint32_t low = 0u;
+    // how many records there are
+    uint32_t high = fetch_cursor.record_count;
+
+    while (low < high) {
+        const uint32_t middle = low + ((high - low) / 2u);
+        LogRecord_t record = {};
+        // reads record from bin and put it in record
+        if (!read_record_at(middle, &record)) {
+            return false;
+        }
+
+        if (fetch_cursor.probe_count != UINT16_MAX) {
+            ++fetch_cursor.probe_count;
+        }
+        // check if record time is what we need
+        if (record.epoch_s < fetch_cursor.from_epoch_s) {
+            low = middle + 1u;
+        } else {
+            high = middle;
+        }
+    }
+
+
+    fetch_cursor.next_record_index = low;
+    const FSIZE_t offset = static_cast<FSIZE_t>(low) *
+    					static_cast<FSIZE_t>(sizeof(LogRecord_t));
+    return f_lseek(&fetch_cursor.reader, offset) == FR_OK;
+}
+
+// opens next bin file finds its first and last record and updates global verbs
+// should be used when you get to the end of the file and you need to move to the next one
+OpenRangeFileResult open_next_range_file(void)
+{
+	// check if next file index is still in range
+    while (fetch_cursor.next_file_index <= fetch_cursor.highest_file_index) {
+        const uint32_t file_index = fetch_cursor.next_file_index;
+        ++fetch_cursor.next_file_index;
+
+        char filename[32] = {};
+        // get file name
+        make_telemetry_filename(fetch_cursor.directory, file_index, filename, sizeof(filename));
+
+        // try to open this file
+        const FRESULT open_result = f_open(&fetch_cursor.reader, filename, FA_READ);
+        if (open_result == FR_NO_FILE) {
+            continue;
+        }
+        if (open_result != FR_OK) {
+            return OpenRangeFileResult::Error;
+        }
+
+        // indicate and update
+        fetch_cursor.reader_is_open = true;
+        fetch_cursor.open_file_index = file_index;
+
+        //checks all records are complite and not corrupted
+        const FSIZE_t file_size = f_size(&fetch_cursor.reader);
+        if ((file_size % sizeof(LogRecord_t)) != 0u) {
+            (void)close_fetch_reader();
+            return OpenRangeFileResult::Error;
+        }
+
+        fetch_cursor.record_count = static_cast<uint32_t>(file_size / sizeof(LogRecord_t));
+        if (fetch_cursor.record_count == 0u) {
+            if (!close_fetch_reader()) {
+                return OpenRangeFileResult::Error;
+            }
+            continue;
+        }
+
+        LogRecord_t first = {};
+        LogRecord_t last = {};
+        // try to fetch last and first records
+        if (!read_record_at(0u, &first) ||
+        		!read_record_at(fetch_cursor.record_count - 1u, &last)) {
+            (void)close_fetch_reader();
+            return OpenRangeFileResult::Error;
+        }
+
+        if (last.epoch_s < fetch_cursor.from_epoch_s) {
+            if (!close_fetch_reader()) {
+                return OpenRangeFileResult::Error;
+            }
+            continue;
+        }
+
+        if (first.epoch_s > fetch_cursor.to_epoch_s) {
+            (void)close_fetch_reader();
+            return OpenRangeFileResult::End;
+        }
+
+        if (!fetch_cursor.first_match_found) {
+            if (!seek_to_first_requested_record()) {
+                (void)close_fetch_reader();
+                return OpenRangeFileResult::Error;
+            }
+
+            if (fetch_cursor.next_record_index == fetch_cursor.record_count) {
+                if (!close_fetch_reader()) {
+                    return OpenRangeFileResult::Error;
+                }
+                continue;
+            }
+
+            fetch_cursor.first_match_found = true;
+        } else {
+            fetch_cursor.next_record_index = 0u;
+            if (f_lseek(&fetch_cursor.reader, 0u) != FR_OK) {
+                (void)close_fetch_reader();
+                return OpenRangeFileResult::Error;
+            }
+        }
+
+        return OpenRangeFileResult::Found;
+    }
+
+    return OpenRangeFileResult::End;
 }
 
 /*
@@ -178,12 +375,18 @@ bool ensure_space_for_new_file(DirectoryCtx_t* ctx)
         }
         (void)highest_index;
 
-        // Never delete the file that is currently open for writing on THIS context.
-        if ((lowest_index == 0u) || (lowest_index == ctx->current_file_index)) {
+        // Never delete a file that is currently open for writing or reading.
+        const bool reader_uses_oldest = fetch_cursor.reader_is_open &&
+        								(fetch_cursor.directory == ctx) &&
+										(fetch_cursor.open_file_index == lowest_index);
+
+        if ((lowest_index == 0u) || (lowest_index == ctx->current_file_index)
+        					|| reader_uses_oldest) {
             return false;
         }
 
         // Increased array size to 16 (was 13) to fit prefix like "0:/TLM0001.BIN"
+        //finds the lowest file and deletes it
         char filename[16] = {};
         make_telemetry_filename(ctx, lowest_index, filename, sizeof(filename));
         if (f_unlink(filename) != FR_OK) {
@@ -241,7 +444,7 @@ bool initialize_session(DirectoryCtx_t* ctx)
 }
 
 /*
- * Re-scans file indexes on this specific directory.
+ * Re scans file indexes on this specific directory.
  */
 bool refresh_next_file_index(DirectoryCtx_t* ctx)
 {
@@ -265,6 +468,7 @@ bool refresh_next_file_index(DirectoryCtx_t* ctx)
  */
 bool open_new_telemetry_file(DirectoryCtx_t* ctx)
 {
+	//if file is open close it
 	if (ctx->file_is_open) {
 		const FRESULT close_result = f_close(&ctx->active_file);
 		ctx->file_is_open = false;
@@ -275,6 +479,7 @@ bool open_new_telemetry_file(DirectoryCtx_t* ctx)
 		}
 	}
 
+	// check there is space for new file
 	if (!ensure_space_for_new_file(ctx) || !refresh_next_file_index(ctx)) {
 		return false;
 	}
@@ -286,8 +491,10 @@ bool open_new_telemetry_file(DirectoryCtx_t* ctx)
 
 	// Buffer size 32 to fit directory prefix
 	char filename[32] = {};
+	// create the file name
 	make_telemetry_filename(ctx, new_index, filename, sizeof(filename));
 
+	// creates the new file
 	if (f_open(&ctx->active_file, filename, FA_CREATE_NEW | FA_WRITE) != FR_OK) {
 		return false;
 	}
@@ -342,6 +549,11 @@ static void disconnect_directory(DirectoryCtx_t* ctx)
 	ctx->current_file_bytes = 0u;
 }
 
+
+/*
+ * tries to mount the sd card
+ * checks if there are two directories eps and payload
+ * connects to them and save the connection in global verbs*/
 bool TelemetryFileStore_Connect(void)
 {
     // Mount the entire SD card once
@@ -370,9 +582,11 @@ bool TelemetryFileStore_Connect(void)
 
 /*
  * Tears down both directories completely (called on error).
+ * Disconnect both connections and try to mount the sd card again
  */
 void TelemetryFileStore_Disconnect(void)
 {
+    TelemetryFileStore_EndFetch();
 	disconnect_directory(&dir_payload);
 	disconnect_directory(&dir_eps);
 
@@ -390,7 +604,7 @@ struct RouteEntry_t {
 };
 
 /*
- * Open-Closed Compliant Routing Table:
+ * Open Closed Compliant Routing Table:
  * To add new subsystem nodes in the future, simply add a new row here.
  * The routing logic itself is closed for modification.
  */
@@ -400,14 +614,12 @@ static const RouteEntry_t RoutingTable[] = {
 };
 
 /*
- * Internal helper: Resolves the target directory context based on the sensor_id.
- * Extracts the Node ID from the high byte of the 16-bit sensor_id (defined in log_record.h).
- * Returns nullptr if the node is unknown.
+ * get node id and return the directory this node sensor id came from
  */
-static DirectoryCtx_t* route_record(uint16_t sensor_id)
+static DirectoryCtx_t* route_record(uint16_t node_sensor_id)
 {
     // Extract the Node ID (top 8 bits) from the sensor_id
-    const uint8_t node_id = static_cast<uint8_t>(sensor_id >> 8u);
+    const uint8_t node_id = static_cast<uint8_t>(node_sensor_id >> 8u);
     const size_t table_size = sizeof(RoutingTable) / sizeof(RoutingTable[0]);
 
     for (size_t i = 0u; i < table_size; ++i) {
@@ -444,7 +656,7 @@ bool TelemetryFileStore_Write(const LogRecord_t* records, uint32_t record_count)
     // Process the mixed batch record by record
     for (uint32_t i = 0u; i < record_count; ++i) {
 
-        // route_record examines the top 8 bits to resolve the target directory (Payload or EPS)
+        //checks where should we save the next record
     	DirectoryCtx_t* ctx = route_record(records[i].sensor_id);
 
         // Handle unknown sources: Alert via UART and skip the record
@@ -507,4 +719,113 @@ bool TelemetryFileStore_Write(const LogRecord_t* records, uint32_t record_count)
     }
 
     return overall_success;
+}
+
+/*
+ * connects to the correct directory ,
+ * and updates global cursor values , so it initialize search .
+ */
+bool TelemetryFileStore_BeginFetch(uint8_t volume, uint32_t from_epoch_s, uint32_t to_epoch_s)
+{
+    if (fetch_cursor.active || (from_epoch_s > to_epoch_s) || (volume > 1u)) {
+        return false;
+    }
+
+    //what directory to search on
+    DirectoryCtx_t* directory = nullptr;
+    if (volume == 0u) {
+        directory = &dir_payload;
+    } else {
+        directory = &dir_eps;
+    }
+    // opens the correct directory
+    if (!directory->file_is_open || (f_sync(&directory->active_file) != FR_OK)) {
+        return false;
+    }
+
+    // seeks file indexes
+    uint32_t lowest_index = 0u;
+    uint32_t highest_index = 0u;
+    //return false if scan failed
+    if (!scan_file_indexes(directory, &lowest_index, &highest_index)) {
+        return false;
+    }
+
+    // update cursor
+    fetch_cursor = {};
+    fetch_cursor.directory = directory;
+    fetch_cursor.active = true;
+    if (lowest_index == 0u) {
+        fetch_cursor.next_file_index = 1u;
+    } else {
+        fetch_cursor.next_file_index = lowest_index;
+    }
+    fetch_cursor.highest_file_index = highest_index;
+    fetch_cursor.from_epoch_s = from_epoch_s;
+    fetch_cursor.to_epoch_s = to_epoch_s;
+    return true;
+}
+
+/*
+ * checks if we finished the current file then move to the next file
+ * and searches for the next valid record that is in epoch range
+ * also the record that was found will be saved in record out side pointer */
+TelemetryReadResult_t TelemetryFileStore_ReadNext(LogRecord_t* record)
+{
+    if (!fetch_cursor.active || (record == nullptr)) {
+        return TELEMETRY_READ_ERROR;
+    }
+
+    for (;;) {
+        if (!fetch_cursor.reader_is_open) {
+        	// open next file
+            const OpenRangeFileResult open_result = open_next_range_file();
+            if (open_result == OpenRangeFileResult::End) {
+                return TELEMETRY_READ_END;
+            }
+            if (open_result == OpenRangeFileResult::Error) {
+                return TELEMETRY_READ_ERROR;
+            }
+        }
+
+        if (fetch_cursor.next_record_index >= fetch_cursor.record_count) {
+            if (!close_fetch_reader()) {
+                return TELEMETRY_READ_ERROR;
+            }
+            continue;
+        }
+
+        UINT bytes_read = 0u;
+        // read the next record and save it in record
+        if ((f_read(&fetch_cursor.reader, record, sizeof(LogRecord_t), &bytes_read) != FR_OK)
+        				|| (bytes_read != sizeof(LogRecord_t))) {
+
+            return TELEMETRY_READ_ERROR;
+        }
+        ++fetch_cursor.next_record_index;
+
+        if (record->epoch_s < fetch_cursor.from_epoch_s) {
+            continue;
+        }
+        if (record->epoch_s > fetch_cursor.to_epoch_s) {
+            return TELEMETRY_READ_END;
+        }
+
+        return TELEMETRY_READ_RECORD;
+    }
+}
+
+/*
+ * How many records did the binary search inspect/check before finding the starting position.*/
+uint16_t TelemetryFileStore_GetFetchProbeCount(void)
+{
+    return fetch_cursor.probe_count;
+}
+/*
+ * reset cursor
+ * */
+void TelemetryFileStore_EndFetch(void)
+{
+    (void)close_fetch_reader();
+    fetch_cursor = {};
 }

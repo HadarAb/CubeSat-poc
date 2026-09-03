@@ -8,6 +8,7 @@
 #include "../../common/crc32.h"
 #include "../../common/log_record.h"
 #include "../Communication/ScheduleApi.hpp"
+#include "../Communication/UartProtocol.hpp"
 #include "../Power/task_watch.hpp"
 #include "rtc.h"
 
@@ -28,9 +29,13 @@ namespace {
 // Fallback flush period used before the schedule module is linked
 constexpr uint32_t default_flush_timeout_ticks = 2000u;
 
-// Current flush period in ticks, taken from the schedule when it is available
+
+// when to flush the SD card
+// checks current mode if mode is unavailable use defult time
+// returns only the frequency
 uint32_t flush_timeout_ticks(void)
 {
+	// if some state missing use default time
     if ((PowerState_Get == nullptr) || (Schedule_GetPeriodMs == nullptr)) {
         return default_flush_timeout_ticks;
     }
@@ -53,20 +58,55 @@ uint32_t flush_timeout_ticks(void)
 
 constexpr uint32_t RetryDelayTicks = 5000u;
 constexpr uint32_t QueueWaitTicks = 250u;
+constexpr uint32_t FetchQueueWaitTicks = 5u;
+constexpr uint32_t FetchFramePeriodTicks = 10u;
+constexpr uint32_t FetchRecordsPerFrame = UART_MAX_PAYLOAD_SIZE / sizeof(LogRecord_t);
 
 static_assert((LOG_RECORDS_PER_SECTOR * sizeof(LogRecord_t)) == LOG_SECTOR_SIZE_BYTES, "One logger batch must occupy exactly one sector");
+static_assert(FetchRecordsPerFrame == 4u, "One UART fetch frame must contain four log records");
 
 // Status values read by GroundComm without giving it access to FatFs.
 volatile SdLoggerState_t logger_state = SD_LOGGER_INITIALIZING;
 volatile uint32_t logger_error_count = 0u;
 
-// One-sector RAM buffer filled from q_telemetry before an SD write
+// ram memory field with records before saving them in the memory
 LogRecord_t batch[LOG_RECORDS_PER_SECTOR] = {};
 uint32_t batch_count = 0u;
 uint32_t flush_deadline = 0u;
 uint32_t next_retry_tick = 0u;
 volatile uint32_t flush_count = 0u;
 bool boot_records_written = false;
+
+typedef struct
+{
+    uint32_t from_epoch_s;
+    uint32_t to_epoch_s;
+    uint16_t max_records;
+    uint16_t sequence;
+    uint8_t volume;
+} FetchRequestMessage_t;
+
+// full fetch state as in how much sent from how much .
+struct FetchState_t {
+    bool active;
+    bool search_finished;
+    bool frame_ready;
+    uint16_t sequence;
+    uint16_t records_sent;
+    uint16_t probe_count;
+    uint8_t final_status;
+    uint8_t frame_type;
+    uint16_t frame_length;
+    uint8_t frame_payload[UART_MAX_PAYLOAD_SIZE];
+    uint32_t next_send_tick;
+    uint32_t from_epoch_s;
+    uint32_t to_epoch_s;
+    uint16_t max_records;
+    uint8_t volume;
+};
+
+osMessageQueueId_t fetch_request_queue = nullptr;
+FetchState_t fetch_state = {};
 
 // check if we have to flush
 bool deadline_reached(uint32_t now, uint32_t deadline)
@@ -91,9 +131,9 @@ void go_offline(uint32_t now)
     set_logger_error();
 }
 
-// read boot flag save it on the SD and reset the register for later .
+// read boot/restart flag(reason) save it on the SD and reset the register(flag) for later .
 // also turns true global verb that indicates that boot record was saved .
-// saves boot count and boot reson , so two records .
+// saves boot count and boot reason , so two records .
 bool write_boot_records(void)
 {
     LogRecord_t records[2] = {};
@@ -157,6 +197,7 @@ bool flush_batch(uint32_t now)
         return false;
     }
 
+    // tries to write the batch on the SD
     if (!TelemetryFileStore_Write(batch, batch_count)) {
         go_offline(now);
         return false;
@@ -165,6 +206,172 @@ bool flush_batch(uint32_t now)
     ++flush_count;
     batch_count = 0u;
     return true;
+}
+
+/*
+ * indicate a search was finished update what is needed */
+void finish_fetch_search(uint8_t status)
+{
+    fetch_state.probe_count = TelemetryFileStore_GetFetchProbeCount();
+    fetch_state.final_status = status;
+    fetch_state.search_finished = true;
+    TelemetryFileStore_EndFetch();
+}
+
+/*
+ * Prepares response for the uart
+ * updates how much records will be sent and other usefull data */
+void prepare_fetch_end_frame(void)
+{
+    UartFetchEndPayload_t response = {};
+    response.status = fetch_state.final_status;
+    response.record_count = fetch_state.records_sent;
+    response.probe_count = fetch_state.probe_count;
+
+    std::memcpy(fetch_state.frame_payload, &response, sizeof(response));
+    fetch_state.frame_type = UART_MSG_FETCH_END;
+    fetch_state.frame_length = sizeof(response);
+    fetch_state.frame_ready = true;
+}
+
+/*
+ * keeps reading valid records, packs as many as will fit into one UART fetch frame,
+ *  stores them in fetch_state.frame_payload, and marks the frame ready for sending later.*/
+void prepare_fetch_data_frame(void)
+{
+
+    if (!fetch_state.active || fetch_state.frame_ready) {
+        return;
+    }
+
+    if (fetch_state.search_finished) {
+        prepare_fetch_end_frame();
+        return;
+    }
+
+    LogRecord_t records[FetchRecordsPerFrame] = {};
+    uint32_t record_count = 0u;
+
+    while (record_count < FetchRecordsPerFrame) {
+    	// how many more records can i pack into uart frame
+        const uint32_t total_count = static_cast<uint32_t>(fetch_state.records_sent)
+        														+ record_count;
+
+        const bool request_limit_reached = (fetch_state.max_records != 0u) &&
+        									(total_count >= fetch_state.max_records);
+
+        if (request_limit_reached || (total_count >= UINT16_MAX)) {
+            finish_fetch_search(UART_STATUS_OK);
+            break;
+        }
+
+        // checks is the next record we need is in the current file or next one
+        const TelemetryReadResult_t read_result =
+        		TelemetryFileStore_ReadNext(&records[record_count]);
+
+        if (read_result == TELEMETRY_READ_RECORD) {
+            ++record_count;
+            continue;
+        }
+
+        if (read_result == TELEMETRY_READ_END) {
+        	uint8_t status = UART_STATUS_OK;
+
+        	if (total_count == 0u) {
+        	    status = UART_STATUS_NOT_FOUND;
+        	} else {
+        	    status = UART_STATUS_OK;
+        	}
+            finish_fetch_search(status);
+        } else {
+            finish_fetch_search(UART_STATUS_STORAGE_ERROR);
+        }
+        break;
+    }
+
+    if (record_count == 0u) {
+        prepare_fetch_end_frame();
+        return;
+    }
+
+    fetch_state.frame_type = UART_MSG_FETCH_DATA;
+    fetch_state.frame_length = static_cast<uint16_t>(record_count * sizeof(LogRecord_t));
+    std::memcpy(fetch_state.frame_payload, records, fetch_state.frame_length);
+    fetch_state.frame_ready = true;
+}
+
+/*
+ * Prepares fetch frames and sends them to the GS.
+ * Updates how many records were sent and schedules when the next frame can be sent.
+ * When the FETCH_END frame is sent, it clears the fetch state and finishes the fetch.
+ */
+void process_fetch(uint32_t now)
+{
+    if (!fetch_state.active || !deadline_reached(now, fetch_state.next_send_tick)) {
+        return;
+    }
+
+    prepare_fetch_data_frame();
+    if (!fetch_state.frame_ready) {
+        return;
+    }
+
+    // send the frame
+    if (UartProtocol_SendFrame(fetch_state.frame_type, fetch_state.sequence,
+    							fetch_state.frame_payload, fetch_state.frame_length) == 0u) {
+
+        fetch_state.next_send_tick = now + 1u;
+        return;
+    }
+
+    if (fetch_state.frame_type == UART_MSG_FETCH_DATA) {
+        fetch_state.records_sent = static_cast<uint16_t>(fetch_state.records_sent +
+        							(fetch_state.frame_length / sizeof(LogRecord_t)));
+
+        fetch_state.frame_ready = false;
+        fetch_state.next_send_tick = now + FetchFramePeriodTicks;
+        return;
+    }
+
+    fetch_state = {};
+}
+
+/*
+ * Starts a new fetch request if one is waiting in the queue.
+ * Copies the request into fetch_state, checks that the SD logger is ready,
+ * flushes recent buffered records to the SD, and starts the file search.
+ * If anything fails, the fetch is finished with a storage error.
+ */
+void start_fetch_if_requested(uint32_t now)
+{
+    if (fetch_state.active || (fetch_request_queue == nullptr)) {
+        return;
+    }
+
+    FetchRequestMessage_t message = {};
+    //check if there is a fetch request if ye copy it to msg
+    if (osMessageQueueGet(fetch_request_queue, &message, nullptr, 0u) != osOK) {
+        return;
+    }
+
+    //start the global fetch state update it to start working
+    fetch_state = {};
+    fetch_state.active = true;
+    fetch_state.sequence = message.sequence;
+    fetch_state.from_epoch_s = message.from_epoch_s;
+    fetch_state.to_epoch_s = message.to_epoch_s;
+    fetch_state.max_records = message.max_records;
+    fetch_state.volume = message.volume;
+    fetch_state.next_send_tick = now;
+
+    if (logger_state != SD_LOGGER_READY) {
+        finish_fetch_search(UART_STATUS_STORAGE_ERROR);
+        return;
+    }
+
+    if (!flush_batch(now) || !TelemetryFileStore_BeginFetch(message.volume, message.from_epoch_s, message.to_epoch_s)) {
+        finish_fetch_search(UART_STATUS_STORAGE_ERROR);
+    }
 }
 
 // Updates current record got from queue. correct time stamp and updates crc then adds it to buffer
@@ -194,14 +401,31 @@ extern "C" uint32_t SdLogger_GetErrorCount(void)
     return logger_error_count;
 }
 
+extern "C" uint8_t SdLogger_RequestFetch(uint16_t sequence, const UartFetchPayload_t* request)
+{
+    if ((fetch_request_queue == nullptr) || (request == nullptr)) {
+        return 0u;
+    }
+
+    FetchRequestMessage_t message = {};
+    message.from_epoch_s = request->from_epoch_s;
+    message.to_epoch_s = request->to_epoch_s;
+    message.max_records = request->max_records;
+    message.sequence = sequence;
+    message.volume = request->volume;
+    return (osMessageQueuePut(fetch_request_queue, &message, 0u, 0u) == osOK) ? 1u : 0u;
+}
+
 // Runs forever as Task_SD_Logger, every helper FatFs call executes from here.
 extern "C" void SdLogger_Task(void* argument)
 {
     (void)argument;
 
+    fetch_request_queue = osMessageQueueNew(2u, sizeof(FetchRequestMessage_t), nullptr);
+
     // check our queue each position is the correct size of one record
     // checks each msg size is record size .
-    if ((q_telemetryHandle == nullptr) || (osMessageQueueGetMsgSize(q_telemetryHandle) != sizeof(LogRecord_t))) {
+    if ((q_telemetryHandle == nullptr) || (osMessageQueueGetMsgSize(q_telemetryHandle) != sizeof(LogRecord_t)) || (fetch_request_queue == nullptr)) {
         set_logger_error();
         for (;;) {
             osDelay(RetryDelayTicks);
@@ -219,11 +443,14 @@ extern "C" void SdLogger_Task(void* argument)
             (void)try_bring_online(now);
         }
 
+        start_fetch_if_requested(now);
+        process_fetch(now);
 
         LogRecord_t record = {};
         // we try to take a record from the queue .
         //what queue,where to store the record,priority,how much time to wait
-        const osStatus_t queue_result = osMessageQueueGet(q_telemetryHandle, &record, nullptr, QueueWaitTicks);
+        const uint32_t queue_wait_ticks = fetch_state.active ? FetchQueueWaitTicks : QueueWaitTicks;
+        const osStatus_t queue_result = osMessageQueueGet(q_telemetryHandle, &record, nullptr, queue_wait_ticks);
         now = osKernelGetTickCount();
 
         if (queue_result == osOK) {
