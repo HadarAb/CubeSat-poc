@@ -27,6 +27,8 @@
 #include "main.h" /* Provide the low-level HAL functions */
 #include "user_diskio_spi.h"
 
+#include <string.h>
+
 #define SD_SPI_HANDLE hspi1
 
 extern SPI_HandleTypeDef hspi1;
@@ -145,14 +147,21 @@ static BYTE xchg_spi(BYTE tx)
 
 /* Receive multiple byte */
 static
-void rcvr_spi_multi (
+int rcvr_spi_multi (
 	BYTE *buff,		/* Pointer to data buffer */
 	UINT btr		/* Number of bytes to receive (even number) */
 )
 {
-	for(UINT i=0; i<btr; i++) {
-		*(buff+i) = xchg_spi(0xFF);
+	// HAL_SPI_Receive uses this buffer as the transmit source in full-duplex
+	// master mode, so initialize it with the SD card's required dummy byte.
+	memset(buff, 0xFF, btr);
+	g_sd_last_hal_status = HAL_SPI_Receive(&SD_SPI_HANDLE, buff, (uint16_t)btr, 200);
+	if (g_sd_last_hal_status == HAL_OK) {
+		return 1;
 	}
+
+	++g_sd_spi_error_count;
+	return 0;
 }
 
 
@@ -249,7 +258,11 @@ int rcvr_datablock (	/* 1:OK, 0:Error */
 	} while ((token == 0xFF) && SPI_Timer_Status());
 	if(token != 0xFE) return 0;		/* Function fails if invalid DataStart token or timeout */
 
-	rcvr_spi_multi(buff, btr);		/* Store trailing data to the buffer */
+	// Store the complete trailing data block in one SPI transfer.
+	if (!rcvr_spi_multi(buff, btr)) {
+		return 0;
+	}
+
 	xchg_spi(0xFF); xchg_spi(0xFF);			/* Discard CRC */
 
 	return 1;						/* Function succeeded */

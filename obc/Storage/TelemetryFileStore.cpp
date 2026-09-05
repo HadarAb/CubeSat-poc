@@ -32,24 +32,29 @@ struct DirectoryCtx_t {
 	bool session_initialized; // True if we have loaded metadata from SESSION.BIN
 	uint32_t current_file_index; // The index (XXXX) of the currently open TLMXXXX.BIN
 	uint32_t current_file_bytes; // How many bytes are currently written to active_file
+	uint32_t lowest_file_index; // Lowest telemetry file found during recovery
+	uint32_t highest_file_index; // Highest telemetry file created or found during recovery
 	SessionMetadata_t session; // Metadata for this specific directory
 };
 
 // Instantiate two independent directory contexts for Payload and EPS.
-DirectoryCtx_t dir_payload = { "PAYLOAD", {}, false, false, 0u, 0u, {} };
-DirectoryCtx_t dir_eps     = { "EPS",     {}, false, false, 0u, 0u, {} };
+DirectoryCtx_t dir_payload = { "PAYLOAD", {}, false, false, 0u, 0u, 0u, 0u, {} };
+DirectoryCtx_t dir_eps     = { "EPS",     {}, false, false, 0u, 0u, 0u, 0u, {} };
 
 struct FetchCursor_t {
     DirectoryCtx_t* directory;
     FIL reader;
     bool active;
     bool reader_is_open;
+    bool reader_uses_active_file;
     bool first_match_found;
     uint32_t next_file_index;
     uint32_t highest_file_index;
     uint32_t open_file_index;
     uint32_t next_record_index;
     uint32_t record_count;
+    uint32_t snapshot_file_index;
+    uint32_t snapshot_record_count;
     uint32_t from_epoch_s;
     uint32_t to_epoch_s;
     uint16_t probe_count;
@@ -125,6 +130,8 @@ bool scan_file_indexes(DirectoryCtx_t* ctx, uint32_t* lowest_index, uint32_t* hi
 
     *lowest_index = 0u;
     *highest_index = 0u;
+    ctx->lowest_file_index = 0u;
+    ctx->highest_file_index = 0u;
 
     DIR directory = {};
     FILINFO info = {};
@@ -158,13 +165,26 @@ bool scan_file_indexes(DirectoryCtx_t* ctx, uint32_t* lowest_index, uint32_t* hi
         if (index > *highest_index) {
             *highest_index = index;
         }
+
+        if (info.fsize > 0u) {
+            if ((ctx->lowest_file_index == 0u) || (index < ctx->lowest_file_index)) {
+                ctx->lowest_file_index = index;
+            }
+            if (index > ctx->highest_file_index) {
+                ctx->highest_file_index = index;
+            }
+        }
     }
 
     const FRESULT close_result = f_closedir(&directory);
     return (result == FR_OK) && (close_result == FR_OK);
 }
-
-// just close the cursor and reset some verbs
+/*
+ * Called when FETCH is done reading the current file.
+ * If it was a normal read-only file, close the reader.
+ * If it was also the active writer file, do not close it.
+ * Move the shared file position back to the end so new data can be appended.
+ */
 bool close_fetch_reader(void)
 {
 	// is there a cursor to a file we already read ?
@@ -172,8 +192,22 @@ bool close_fetch_reader(void)
         return true;
     }
 
-    const FRESULT result = f_close(&fetch_cursor.reader);
+    FRESULT result = FR_OK;
+    if (fetch_cursor.reader_uses_active_file) {
+        // Check if the file used for reading is still the current writer file.
+        const bool snapshot_is_still_active = fetch_cursor.directory->file_is_open &&
+                (fetch_cursor.directory->current_file_index == fetch_cursor.open_file_index);
+        // Restore the shared cursor to the end so the next write appends data.
+        if (snapshot_is_still_active) {
+            result = f_lseek(&fetch_cursor.directory->active_file,
+                    f_size(&fetch_cursor.directory->active_file));
+        }
+    } else {
+        result = f_close(&fetch_cursor.reader);
+    }
+
     fetch_cursor.reader_is_open = false;
+    fetch_cursor.reader_uses_active_file = false;
     fetch_cursor.open_file_index = 0u;
     fetch_cursor.next_record_index = 0u;
     fetch_cursor.record_count = 0u;
@@ -192,15 +226,67 @@ bool read_record_at(uint32_t record_index, LogRecord_t* record)
     const FSIZE_t offset = static_cast<FSIZE_t>(record_index)
     						* static_cast<FSIZE_t>(sizeof(LogRecord_t));
 
-    if (f_lseek(&fetch_cursor.reader, offset) != FR_OK) {
+    FIL* source = &fetch_cursor.reader;
+    FSIZE_t writer_end = 0u;
+    //check we are on the writing file
+    if (fetch_cursor.reader_uses_active_file) {
+        if (!fetch_cursor.directory->file_is_open ||
+                (fetch_cursor.directory->current_file_index != fetch_cursor.open_file_index)) {
+            return false;
+        }
+        // current file we use
+        source = &fetch_cursor.directory->active_file;
+        // get its size so later we can get to the end of it to write again
+        writer_end = f_size(source);
+    }
+
+    if (f_lseek(source, offset) != FR_OK) {
         return false;
     }
 
     UINT bytes_read = 0u;
     // read from the bin file exactly the file at the index
     // put what we found inside record
-    return (f_read(&fetch_cursor.reader, record, sizeof(LogRecord_t), &bytes_read) == FR_OK)
-    				&& (bytes_read == sizeof(LogRecord_t));
+    const FRESULT read_result = f_read(source, record, sizeof(LogRecord_t), &bytes_read);
+    if (fetch_cursor.reader_uses_active_file && (f_lseek(source, writer_end) != FR_OK)) {
+        return false;
+    }
+    return (read_result == FR_OK) && (bytes_read == sizeof(LogRecord_t));
+}
+
+/*
+ * If the snapshot file stops being the active writer file during FETCH,
+ * switch cleanly to a normal read-only reader and continue from the same record.
+ */
+bool switch_rotated_snapshot_to_reader(void)
+{
+    if (!fetch_cursor.reader_is_open || !fetch_cursor.reader_uses_active_file) {
+        return true;
+    }
+    if (fetch_cursor.directory->file_is_open &&
+            (fetch_cursor.directory->current_file_index == fetch_cursor.open_file_index)) {
+        return true;
+    }
+
+    char filename[32] = {};
+    make_telemetry_filename(fetch_cursor.directory, fetch_cursor.open_file_index,
+            filename, sizeof(filename));
+    fetch_cursor.reader_is_open = false;
+    fetch_cursor.reader_uses_active_file = false;
+    if (f_open(&fetch_cursor.reader, filename, FA_READ) != FR_OK) {
+        return false;
+    }
+    fetch_cursor.reader_is_open = true;
+
+    const FSIZE_t file_size = f_size(&fetch_cursor.reader);
+    const FSIZE_t snapshot_size = static_cast<FSIZE_t>(fetch_cursor.snapshot_record_count)
+            * sizeof(LogRecord_t);
+    if (((file_size % sizeof(LogRecord_t)) != 0u) ||
+            (file_size < snapshot_size)) {
+        return false;
+    }
+    return f_lseek(&fetch_cursor.reader, static_cast<FSIZE_t>(fetch_cursor.next_record_index)
+            * sizeof(LogRecord_t)) == FR_OK;
 }
 
 // there is a global starting time (from_epoch)
@@ -233,6 +319,10 @@ bool seek_to_first_requested_record(void)
 
 
     fetch_cursor.next_record_index = low;
+    if (fetch_cursor.reader_uses_active_file) {
+        return true;
+    }
+
     const FSIZE_t offset = static_cast<FSIZE_t>(low) *
     					static_cast<FSIZE_t>(sizeof(LogRecord_t));
     return f_lseek(&fetch_cursor.reader, offset) == FR_OK;
@@ -247,31 +337,53 @@ OpenRangeFileResult open_next_range_file(void)
         const uint32_t file_index = fetch_cursor.next_file_index;
         ++fetch_cursor.next_file_index;
 
-        char filename[32] = {};
-        // get file name
-        make_telemetry_filename(fetch_cursor.directory, file_index, filename, sizeof(filename));
-
-        // try to open this file
-        const FRESULT open_result = f_open(&fetch_cursor.reader, filename, FA_READ);
-        if (open_result == FR_NO_FILE) {
-            continue;
+        // check if current file is the file that writer uses
+        const bool use_active_file = (file_index == fetch_cursor.snapshot_file_index) &&
+                fetch_cursor.directory->file_is_open &&
+                (fetch_cursor.directory->current_file_index == file_index);
+        // work with already open file
+        if (use_active_file) {
+            fetch_cursor.reader_is_open = true;
+            fetch_cursor.reader_uses_active_file = true;
+            fetch_cursor.open_file_index = file_index;
+            // open connection to the index we point right now
+        } else {
+            char filename[32] = {};
+            make_telemetry_filename(fetch_cursor.directory, file_index, filename,
+                    sizeof(filename));
+            const FRESULT open_result = f_open(&fetch_cursor.reader, filename, FA_READ);
+            if (open_result == FR_NO_FILE) {
+                continue;
+            }
+            if (open_result != FR_OK) {
+                return OpenRangeFileResult::Error;
+            }
+            fetch_cursor.reader_is_open = true;
+            fetch_cursor.reader_uses_active_file = false;
+            fetch_cursor.open_file_index = file_index;
         }
-        if (open_result != FR_OK) {
-            return OpenRangeFileResult::Error;
+
+        //checks all records are complete and not corrupted
+        FSIZE_t file_size = 0u;
+        if (use_active_file) {
+            file_size = f_size(&fetch_cursor.directory->active_file);
+        } else {
+            file_size = f_size(&fetch_cursor.reader);
         }
-
-        // indicate and update
-        fetch_cursor.reader_is_open = true;
-        fetch_cursor.open_file_index = file_index;
-
-        //checks all records are complite and not corrupted
-        const FSIZE_t file_size = f_size(&fetch_cursor.reader);
+        //can the file size be divided by log recored cleanly
         if ((file_size % sizeof(LogRecord_t)) != 0u) {
             (void)close_fetch_reader();
             return OpenRangeFileResult::Error;
         }
-
+        // how many records corrently exist
         fetch_cursor.record_count = static_cast<uint32_t>(file_size / sizeof(LogRecord_t));
+        if (file_index == fetch_cursor.snapshot_file_index) {
+            if (fetch_cursor.record_count < fetch_cursor.snapshot_record_count) {
+                (void)close_fetch_reader();
+                return OpenRangeFileResult::Error;
+            }
+            fetch_cursor.record_count = fetch_cursor.snapshot_record_count;
+        }
         if (fetch_cursor.record_count == 0u) {
             if (!close_fetch_reader()) {
                 return OpenRangeFileResult::Error;
@@ -316,7 +428,7 @@ OpenRangeFileResult open_next_range_file(void)
             fetch_cursor.first_match_found = true;
         } else {
             fetch_cursor.next_record_index = 0u;
-            if (f_lseek(&fetch_cursor.reader, 0u) != FR_OK) {
+            if (!fetch_cursor.reader_uses_active_file && (f_lseek(&fetch_cursor.reader, 0u) != FR_OK)) {
                 (void)close_fetch_reader();
                 return OpenRangeFileResult::Error;
             }
@@ -376,12 +488,13 @@ bool ensure_space_for_new_file(DirectoryCtx_t* ctx)
         (void)highest_index;
 
         // Never delete a file that is currently open for writing or reading.
-        const bool reader_uses_oldest = fetch_cursor.reader_is_open &&
-        								(fetch_cursor.directory == ctx) &&
-										(fetch_cursor.open_file_index == lowest_index);
+        bool fetch_uses_oldest = false;
+        if (fetch_cursor.active && (fetch_cursor.directory == ctx)) {
+            fetch_uses_oldest = lowest_index <= fetch_cursor.highest_file_index;
+        }
 
         if ((lowest_index == 0u) || (lowest_index == ctx->current_file_index)
-        					|| reader_uses_oldest) {
+							|| fetch_uses_oldest) {
             return false;
         }
 
@@ -413,7 +526,6 @@ bool initialize_session(DirectoryCtx_t* ctx)
     if (!scan_file_indexes(ctx, &lowest_index, &highest_index)) {
         return false;
     }
-    (void)lowest_index;
 
 	// Apply metadata to this specific directory's context
 	if (loaded_valid) {
@@ -454,8 +566,6 @@ bool refresh_next_file_index(DirectoryCtx_t* ctx)
         return false;
     }
 
-    (void)lowest_index;
-
     if ((highest_index != 0u) && (ctx->session.next_file_index <= highest_index)) {
     	ctx->session.next_file_index = highest_index + 1u;
     }
@@ -480,7 +590,7 @@ bool open_new_telemetry_file(DirectoryCtx_t* ctx)
 	}
 
 	// check there is space for new file
-	if (!ensure_space_for_new_file(ctx) || !refresh_next_file_index(ctx)) {
+	if (!ensure_space_for_new_file(ctx)) {
 		return false;
 	}
 	if ((ctx->session.next_file_index == 0u) || (ctx->session.next_file_index > MaximumFileIndex)) {
@@ -495,7 +605,7 @@ bool open_new_telemetry_file(DirectoryCtx_t* ctx)
 	make_telemetry_filename(ctx, new_index, filename, sizeof(filename));
 
 	// creates the new file
-	if (f_open(&ctx->active_file, filename, FA_CREATE_NEW | FA_WRITE) != FR_OK) {
+	if (f_open(&ctx->active_file, filename, FA_CREATE_NEW | FA_READ | FA_WRITE) != FR_OK) {
 		return false;
 	}
 
@@ -676,6 +786,7 @@ bool TelemetryFileStore_Write(const LogRecord_t* records, uint32_t record_count)
 
         // Check if the target directory is offline/disconnected
         if (!ctx->file_is_open) {
+            overall_success = false;
             continue;
         }
 
@@ -688,11 +799,26 @@ bool TelemetryFileStore_Write(const LogRecord_t* records, uint32_t record_count)
             }
         }
 
-        // Write exactly one record to the FatFs RAM buffer
+        // f_tell where are we in the file != end of the file
+        // f_lseek move curser to the end
+        // we try to write new records so we need to be at the end of the file
+        if ((f_tell(&ctx->active_file) != f_size(&ctx->active_file)) &&
+                (f_lseek(&ctx->active_file, f_size(&ctx->active_file)) != FR_OK)) {
+            overall_success = false;
+            continue;
+        }
         UINT bytes_written = 0u;
-        FRESULT result = f_write(&ctx->active_file, &records[i], sizeof(LogRecord_t), &bytes_written);
+        FRESULT result = f_write(&ctx->active_file, &records[i], sizeof(LogRecord_t),
+                &bytes_written);
 
         if ((result == FR_OK) && (bytes_written == sizeof(LogRecord_t))) {
+            if ((ctx->lowest_file_index == 0u) ||
+                    (ctx->current_file_index < ctx->lowest_file_index)) {
+                ctx->lowest_file_index = ctx->current_file_index;
+            }
+            if (ctx->current_file_index > ctx->highest_file_index) {
+                ctx->highest_file_index = ctx->current_file_index;
+            }
             ctx->current_file_bytes += sizeof(LogRecord_t);
 
             // Flag which directory actually received data so we can selectively sync later
@@ -738,29 +864,46 @@ bool TelemetryFileStore_BeginFetch(uint8_t volume, uint32_t from_epoch_s, uint32
     } else {
         directory = &dir_eps;
     }
-    // opens the correct directory
+    // Flush the writer so the fetch snapshot includes the latest saved records.
     if (!directory->file_is_open || (f_sync(&directory->active_file) != FR_OK)) {
         return false;
     }
 
-    // seeks file indexes
-    uint32_t lowest_index = 0u;
-    uint32_t highest_index = 0u;
-    //return false if scan failed
-    if (!scan_file_indexes(directory, &lowest_index, &highest_index)) {
+    const FSIZE_t active_file_size = f_size(&directory->active_file);
+    // A partial 16-byte record means that this telemetry file is damaged.
+    if ((active_file_size % sizeof(LogRecord_t)) != 0u) {
         return false;
     }
+    directory->current_file_bytes = static_cast<uint32_t>(active_file_size);
+
+    uint32_t snapshot_file_index = 0u;
+    uint32_t snapshot_record_count = 0u;
+    uint32_t snapshot_highest_index = directory->highest_file_index;
+    if (active_file_size > 0u) {
+        snapshot_file_index = directory->current_file_index;
+        snapshot_record_count = static_cast<uint32_t>(active_file_size / sizeof(LogRecord_t));
+        snapshot_highest_index = snapshot_file_index;
+    }
+
+    const uint32_t lowest_index = directory->lowest_file_index;
+    const uint32_t highest_index = directory->highest_file_index;
 
     // update cursor
     fetch_cursor = {};
     fetch_cursor.directory = directory;
     fetch_cursor.active = true;
-    if (lowest_index == 0u) {
+    fetch_cursor.snapshot_file_index = snapshot_file_index;
+    fetch_cursor.snapshot_record_count = snapshot_record_count;
+    if ((lowest_index == 0u) || (lowest_index > snapshot_highest_index)) {
         fetch_cursor.next_file_index = 1u;
+        fetch_cursor.highest_file_index = 0u;
     } else {
         fetch_cursor.next_file_index = lowest_index;
+        fetch_cursor.highest_file_index = highest_index;
+        if (snapshot_highest_index < highest_index) {
+            fetch_cursor.highest_file_index = snapshot_highest_index;
+        }
     }
-    fetch_cursor.highest_file_index = highest_index;
     fetch_cursor.from_epoch_s = from_epoch_s;
     fetch_cursor.to_epoch_s = to_epoch_s;
     return true;
@@ -770,13 +913,21 @@ bool TelemetryFileStore_BeginFetch(uint8_t volume, uint32_t from_epoch_s, uint32
  * checks if we finished the current file then move to the next file
  * and searches for the next valid record that is in epoch range
  * also the record that was found will be saved in record out side pointer */
-TelemetryReadResult_t TelemetryFileStore_ReadNext(LogRecord_t* record)
+TelemetryReadResult_t TelemetryFileStore_ReadChunk(
+        LogRecord_t* records, uint32_t capacity, uint32_t* record_count)
 {
-    if (!fetch_cursor.active || (record == nullptr)) {
+    if (!fetch_cursor.active || (records == nullptr) || (record_count == nullptr)
+            || (capacity == 0u)) {
         return TELEMETRY_READ_ERROR;
     }
 
+    *record_count = 0u;
+
     for (;;) {
+        if (!switch_rotated_snapshot_to_reader()) {
+            return TELEMETRY_READ_ERROR;
+        }
+
         if (!fetch_cursor.reader_is_open) {
         	// open next file
             const OpenRangeFileResult open_result = open_next_range_file();
@@ -795,23 +946,71 @@ TelemetryReadResult_t TelemetryFileStore_ReadNext(LogRecord_t* record)
             continue;
         }
 
-        UINT bytes_read = 0u;
-        // read the next record and save it in record
-        if ((f_read(&fetch_cursor.reader, record, sizeof(LogRecord_t), &bytes_read) != FR_OK)
-        				|| (bytes_read != sizeof(LogRecord_t))) {
+        // Read only what remains in this file and what fits in the output chunk.
+        const uint32_t available = fetch_cursor.record_count - fetch_cursor.next_record_index;
+        const uint32_t wanted = capacity - *record_count;
 
+        uint32_t read_count = 0u;
+        if (available < wanted) {
+            read_count = available;
+        } else {
+            read_count = wanted;
+        }
+
+        const FSIZE_t offset = static_cast<FSIZE_t>(fetch_cursor.next_record_index)
+                * sizeof(LogRecord_t);
+
+        FIL* source = &fetch_cursor.reader;
+
+        if (fetch_cursor.reader_uses_active_file) {
+            source = &fetch_cursor.directory->active_file;
+        }
+
+        FSIZE_t writer_end = 0u;
+
+        if (fetch_cursor.reader_uses_active_file) {
+            writer_end = f_size(source);
+        }
+
+        if ((f_tell(source) != offset) && (f_lseek(source, offset) != FR_OK)) {
             return TELEMETRY_READ_ERROR;
         }
-        ++fetch_cursor.next_record_index;
 
-        if (record->epoch_s < fetch_cursor.from_epoch_s) {
-            continue;
-        }
-        if (record->epoch_s > fetch_cursor.to_epoch_s) {
-            return TELEMETRY_READ_END;
+        // One FatFs read now returns several records instead of one record.
+        UINT bytes_read = 0u;
+        const UINT bytes_requested = static_cast<UINT>(read_count * sizeof(LogRecord_t));
+        const FRESULT read_result = f_read(source, &records[*record_count],
+                bytes_requested, &bytes_read);
+
+        bool writer_restored = true;
+        if (fetch_cursor.reader_uses_active_file) {
+            writer_restored = f_lseek(source, writer_end) == FR_OK;
         }
 
-        return TELEMETRY_READ_RECORD;
+        if ((read_result != FR_OK) || (bytes_read != bytes_requested) || !writer_restored) {
+            return TELEMETRY_READ_ERROR;
+        }
+
+        // Save the next snapshot index before allowing normal writes again.
+        const uint32_t first_read_index = *record_count;
+        fetch_cursor.next_record_index += read_count;
+
+        // Keep only records inside the inclusive requested time range.
+        for (uint32_t i = 0u; i < read_count; ++i) {
+            const LogRecord_t record = records[first_read_index + i];
+            if (record.epoch_s < fetch_cursor.from_epoch_s) {
+                continue;
+            }
+            if (record.epoch_s > fetch_cursor.to_epoch_s) {
+                return TELEMETRY_READ_END;
+            }
+            records[*record_count] = record;
+            ++(*record_count);
+        }
+
+        if (*record_count == capacity) {
+            return TELEMETRY_READ_RECORD;
+        }
     }
 }
 

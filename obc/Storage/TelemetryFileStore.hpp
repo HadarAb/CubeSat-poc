@@ -26,11 +26,12 @@ typedef enum
 // Starts an inclusive time-range search. Volume 0 is payload and volume 1 is housekeeping.
 bool TelemetryFileStore_BeginFetch(uint8_t volume, uint32_t from_epoch_s, uint32_t to_epoch_s);
 
-// Returns one record at a time after the binary search has found the first match.
-TelemetryReadResult_t TelemetryFileStore_ReadNext(LogRecord_t* record);
+// Reads up to capacity sequential records after the binary search found the first match.
+TelemetryReadResult_t TelemetryFileStore_ReadChunk(
+        LogRecord_t* records, uint32_t capacity, uint32_t* record_count);
 
 // Returns only binary-search midpoint reads, not sequential records sent to the GS.
 uint16_t TelemetryFileStore_GetFetchProbeCount(void);
 
-// Closes the separate read-only FIL without touching either writer FIL.
+// Ends the snapshot read and closes its read-only file when one is open.
 void TelemetryFileStore_EndFetch(void);
