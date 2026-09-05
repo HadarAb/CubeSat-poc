@@ -27,6 +27,7 @@
 /* USER CODE BEGIN Includes */
 #include "ObcController.hpp"
 #include "PayloadCollector.hpp"
+#include "iwdg.h"
 #include "../../../common/log_record.h"
 #include "SdLogger.hpp"
 #include "../Power/power_state.hpp"
@@ -42,6 +43,11 @@ typedef StaticSemaphore_t osStaticMutexDef_t;
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
 
+#define TASK_SUPERVISOR_CHECK_TICKS 2000u
+
+/* Set to 1 only for the on-board IWDG reset demonstration, then restore to 0. */
+#define WATCHDOG_TEST_FREEZE_GROUND_COMM 0u
+
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -53,12 +59,12 @@ typedef StaticSemaphore_t osStaticMutexDef_t;
 /* USER CODE BEGIN Variables */
 osMutexId_t i2c_mtxHandle;
 /* USER CODE END Variables */
-/* Definitions for defaultTask */
-osThreadId_t defaultTaskHandle;
-const osThreadAttr_t defaultTask_attributes = {
-  .name = "defaultTask",
+/* Definitions for Task_Supervisor */
+osThreadId_t Task_SupervisorHandle;
+const osThreadAttr_t Task_Supervisor_attributes = {
+  .name = "Task_Supervisor",
   .stack_size = 128 * 4,
-  .priority = (osPriority_t) osPriorityNormal,
+  .priority = (osPriority_t) osPriorityHigh,
 };
 /* Definitions for Task_PayloadCol */
 osThreadId_t Task_PayloadColHandle;
@@ -107,7 +113,7 @@ const osMutexAttr_t mtx_spi_attributes = {
 
 /* USER CODE END FunctionPrototypes */
 
-void StartDefaultTask(void *argument);
+void StartTask_Supervisor(void *argument);
 void StartTask_PayloadCol(void *argument);
 void StartTask_SD_Logger(void *argument);
 void StartTask_PowerMgmt(void *argument);
@@ -161,8 +167,8 @@ void MX_FREERTOS_Init(void) {
   /* USER CODE END RTOS_QUEUES */
 
   /* Create the thread(s) */
-  /* creation of defaultTask */
-  defaultTaskHandle = osThreadNew(StartDefaultTask, NULL, &defaultTask_attributes);
+  /* creation of Task_Supervisor */
+  Task_SupervisorHandle = osThreadNew(StartTask_Supervisor, NULL, &Task_Supervisor_attributes);
 
   /* creation of Task_PayloadCol */
   Task_PayloadColHandle = osThreadNew(StartTask_PayloadCol, NULL, &Task_PayloadCol_attributes);
@@ -186,22 +192,31 @@ void MX_FREERTOS_Init(void) {
 
 }
 
-/* USER CODE BEGIN Header_StartDefaultTask */
+/* USER CODE BEGIN Header_StartTask_Supervisor */
 /**
-  * @brief  Function implementing the defaultTask thread.
+  * @brief  Function implementing the Task_Supervisor thread.
   * @param  argument: Not used
   * @retval None
   */
-/* USER CODE END Header_StartDefaultTask */
-void StartDefaultTask(void *argument)
+/* USER CODE END Header_StartTask_Supervisor */
+void StartTask_Supervisor(void *argument)
 {
-  /* USER CODE BEGIN StartDefaultTask */
-  /* Infinite loop */
+  /* USER CODE BEGIN StartTask_Supervisor */
+  (void)argument;
+
+  // IWDG is configured for roughly 32 seconds. Every two seconds, consume a
+  // complete heartbeat window and refresh only when all four worker tasks have
+  // made progress. Missing bits are deliberately not cleared, giving a delayed
+  // healthy task the rest of the hardware watchdog interval to report.
   for(;;)
   {
-    osDelay(1);
+    osDelay(TASK_SUPERVISOR_CHECK_TICKS);
+
+    if (task_watch_all_alive_and_clear()) {
+      (void)HAL_IWDG_Refresh(&hiwdg);
+    }
   }
-  /* USER CODE END StartDefaultTask */
+  /* USER CODE END StartTask_Supervisor */
 }
 
 /* USER CODE BEGIN Header_StartTask_PayloadCol */
@@ -269,11 +284,18 @@ void StartTask_PowerMgmt(void *argument)
 void StartTask_GroundComm(void *argument)
 {
   /* USER CODE BEGIN StartTask_GroundComm */
-  /* Drains the USART2 RX ring buffer, answers ground-station requests, and checks
-     the automatic-status schedule. Before the RTOS this ran from main(), which
-     osKernelStart() made unreachable -- without this call the OBC transmits its boot
-     banner and then never answers a command. */
-  /* Infinite loop */
+  (void)argument;
+
+#if WATCHDOG_TEST_FREEZE_GROUND_COMM
+  // Deliberately stop one worker so the supervisor withholds IWDG refreshes.
+  (void)osThreadSuspend(osThreadGetId());
+#endif
+
+  // Drains the USART2 RX ring buffer, answers ground-station requests, and checks
+  // the automatic-status schedule. Before the RTOS this ran from main(), which
+  // osKernelStart() made unreachable -- without this call the OBC transmits its boot
+  // banner and then never answers a command.
+  // Infinite loop
   for(;;)
   {
     ObcController_Process();

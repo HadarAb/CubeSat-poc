@@ -50,15 +50,17 @@ except ImportError:
 
 try:
     from .plotting import plot_records
-    from .sensors import decode_value, describe_sensor
+    from .sensors import SENSOR_ID_RESET_CAUSE, decode_value, describe_reset_flags, describe_sensor
 except ImportError:
     from plotting import plot_records
-    from sensors import decode_value, describe_sensor
+    from sensors import SENSOR_ID_RESET_CAUSE, decode_value, describe_reset_flags, describe_sensor
 
 
 BAUD_RATE = 115200
 RESPONSE_TIMEOUT_SECONDS = 2.0
-FETCH_TIMEOUT_SECONDS = 10.0
+FETCH_TIMEOUT_SECONDS = 60.0
+FETCH_PRINT_BATCH_SIZE = 100
+FETCH_PLOT_RECORD_LIMIT = 10000
 
 
 class GroundStation:
@@ -212,9 +214,8 @@ class GroundStation:
         except Exception as error:
             print(f"\n[AUTO TIME SYNC FAILED] {error}")
 
-    # Stream one fetch. Returns (records, FetchEnd).
-    def fetch(self, from_epoch: int, to_epoch: int, volume: int,
-              max_records: int = 0) -> tuple[list, object]:
+    # Stream one fetch. A handler receives each decoded UART batch without storing the full result.
+    def fetch(self, from_epoch: int, to_epoch: int, volume: int, max_records: int = 0, record_handler=None) -> tuple[list, object]:
         self.start()
         sequence = self._next_sequence()
         self._send(
@@ -244,11 +245,19 @@ class GroundStation:
                 raise RuntimeError(f"OBC error: {_status_name(decode_payload(frame).status)}")
 
             if frame.msg_type == MessageType.FETCH_DATA:
-                records.extend(decode_fetch_records(frame))
+                received_records = decode_fetch_records(frame)
+                if record_handler is None:
+                    records.extend(received_records)
+                else:
+                    record_handler(received_records)
+                deadline = time.monotonic() + FETCH_TIMEOUT_SECONDS
                 continue
 
             if frame.msg_type == MessageType.FETCH_END:
-                return records, decode_fetch_end(frame)
+                end = decode_fetch_end(frame)
+                if end.status not in (Status.OK, Status.NOT_FOUND):
+                    raise RuntimeError(f"OBC fetch error: {_status_name(end.status)}")
+                return records, end
 
 
 def _status_name(value: int) -> str:
@@ -352,12 +361,15 @@ def parse_datetime(text: str) -> int:
     raise ValueError(f"cannot parse date/time: {text!r}")
 
 
-def render_records(records: list, last_sync_epoch: int | None) -> None:
+def render_records(records: list, last_sync_epoch: int | None, show_header: bool = True) -> None:
     if not records:
         print("  (no records in range)")
         return
 
-    print(f"  {'time':<20} {'node':<8} {'key':<8} {'value':>14}  flags")
+    lines = []
+    if show_header:
+        lines.append(f"  {'time':<20} {'node':<8} {'key':<8} {'value':>14}  flags")
+
     for record in records:
         node, key, vt_type = describe_sensor(record.sensor_id)
         value = decode_value(record.value, vt_type)
@@ -372,36 +384,83 @@ def render_records(records: list, last_sync_epoch: int | None) -> None:
         if last_sync_epoch is not None and record.epoch_s < last_sync_epoch:
             marks.append("PRE-SYNC")
 
-        shown = f"{value:.3f}" if isinstance(value, float) else str(value)
-        print(f"  {when:<20} {node:<8} {key:<8} {shown:>14}  {' '.join(marks)}")
+        shown = describe_reset_flags(value) if record.sensor_id == SENSOR_ID_RESET_CAUSE else f"{value:.3f}" if isinstance(value, float) else str(value)
+        lines.append(f"  {when:<20} {node:<8} {key:<8} {shown:>14}  {' '.join(marks)}")
+
+    print("\n".join(lines))
 
 
 def do_fetch(station: GroundStation, args: list[str]) -> None:
     if len(args) < 2:
-        print("usage: fetch <from> <to> [payload|hk] [--plot]")
+        print("usage: fetch <from> <to> [payload|hk] [--boot] [--plot]")
         return
 
     plot = "--plot" in args
-    args = [a for a in args if a != "--plot"]
+    boot_only = "--boot" in args
+    args = [a for a in args if a not in {"--boot", "--plot"}]
 
     volume = VOLUME_PAYLOAD
-    if len(args) >= 3:
+    if boot_only:
+        volume = VOLUME_HK
+    elif len(args) >= 3:
         volume = VOLUME_HK if args[2].lower() == "hk" else VOLUME_PAYLOAD
 
     from_epoch = parse_datetime(args[0])
     to_epoch = parse_datetime(args[1])
 
+    label = "hk" if volume == VOLUME_HK else "payload"
+    label = f"{label} boot" if boot_only else label
+    print(f"[FETCH {label}] receiving records...")
+
+    print_buffer = []
+    plot_buffer = []
+    displayed_count = 0
+    header_printed = False
+    plot_limit_exceeded = False
+
+    def flush_print_buffer() -> None:
+        nonlocal header_printed
+        if not print_buffer:
+            return
+
+        render_records(print_buffer, station.last_sync_epoch, not header_printed)
+        header_printed = True
+        print_buffer.clear()
+
+    # Keep only one small print batch in RAM; already printed records are discarded.
+    def handle_records(received_records: list) -> None:
+        nonlocal displayed_count, plot_limit_exceeded
+        if boot_only:
+            received_records = [record for record in received_records if record.type == LOG_RECORD_TYPE_BOOT]
+
+        displayed_count += len(received_records)
+        print_buffer.extend(received_records)
+
+        if plot and not plot_limit_exceeded:
+            if len(plot_buffer) + len(received_records) <= FETCH_PLOT_RECORD_LIMIT:
+                plot_buffer.extend(received_records)
+            else:
+                plot_buffer.clear()
+                plot_limit_exceeded = True
+
+        if len(print_buffer) >= FETCH_PRINT_BATCH_SIZE:
+            flush_print_buffer()
+
     started = time.monotonic()
-    records, end = station.fetch(from_epoch, to_epoch, volume)
+    _, end = station.fetch(from_epoch, to_epoch, volume, record_handler=handle_records)
+    flush_print_buffer()
     elapsed = time.monotonic() - started
 
-    label = "hk" if volume == VOLUME_HK else "payload"
-    print(f"[FETCH {label}] {len(records)} records in {elapsed:.3f}s")
+    print(f"[FETCH {label}] {displayed_count} records in {elapsed:.3f}s")
     print(f"  probes: {end.probe_count}  (linear scan would be {end.record_count})")
-    render_records(records, station.last_sync_epoch)
+    if displayed_count == 0:
+        print("  (no records in range)")
 
     if plot:
-        plot_records(records)
+        if plot_limit_exceeded:
+            print(f"Plot skipped: fetch exceeds the {FETCH_PLOT_RECORD_LIMIT}-record plotting limit")
+        else:
+            plot_records(plot_buffer)
 
 
 def interactive_loop(station: GroundStation) -> None:
@@ -425,7 +484,7 @@ def interactive_loop(station: GroundStation) -> None:
             print("status  - request OBC and I2C status")
             print("payload - request the latest cached telemetry")
             print("battery - request the latest battery percentage")
-            print("fetch   - fetch <from> <to> [payload|hk] [--plot]")
+            print("fetch   - fetch <from> <to> [payload|hk] [--boot] [--plot]")
             print("time    - time sync, push this PC's clock to the OBC")
             print("quit    - close the ground station")
             continue

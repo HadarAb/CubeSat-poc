@@ -12,6 +12,9 @@
 #include "PayloadCollector.hpp"
 #include "../Storage/SdLogger.hpp"
 #include "../Power/task_watch.hpp"
+#include "../Core/Inc/rtc.h"
+
+#include <cstring>
 
 /*
  * Dev 1 owns these implementations. Weak references let this branch build
@@ -144,8 +147,11 @@ UartStatusPayload_t BuildStatusPayload(uint8_t power_state)
         status.eps_crc_failures = collector.eps_crc_failures;
     }
 
-    // Inject the task_watch bitmask into the reserved byte for ground visibility
-    status.reserved = static_cast<uint8_t>(task_watch_get_mask() & 0xFFu);
+    // Inject the task-watch bitmask into status flags for ground visibility.
+    status.flags |= static_cast<uint8_t>(task_watch_get_mask() & 0x0Fu);
+    if (RTC_time_is_valid() != 0u) {
+        status.flags |= OBC_FLAG_TIME_VALID;
+    }
 
     return status;
 }
@@ -222,6 +228,45 @@ void HandleRequest(const UartRequest_t& req)
         {
             const UartPayload_t payload = BuildPayload(EPS_NODE_ID);
             UartProtocol_SendFrame(req.msg_type, req.sequence, &payload, sizeof(payload));
+            break;
+        }
+
+        case UART_MSG_SET_TIME:
+        {
+            if (req.payload_length != sizeof(UartSetTimePayload_t)) {
+                SendError(req.sequence, UART_STATUS_BAD_REQUEST);
+                break;
+            }
+
+            UartSetTimePayload_t request = {};
+            std::memcpy(&request, req.payload, sizeof(request));
+            if (RTC_set_epoch(request.epoch_s) == 0u) {
+                SendError(req.sequence, UART_STATUS_BAD_REQUEST);
+                break;
+            }
+
+            UartProtocol_SendFrame(req.msg_type, req.sequence, nullptr, 0u);
+            break;
+        }
+
+        case UART_MSG_FETCH:
+        {
+            if (req.payload_length != sizeof(UartFetchPayload_t)) {
+                SendError(req.sequence, UART_STATUS_BAD_REQUEST);
+                break;
+            }
+
+            UartFetchPayload_t request = {};
+            std::memcpy(&request, req.payload, sizeof(request));
+
+            if ((request.from_epoch_s > request.to_epoch_s) || (request.volume > 1u)) {
+                SendError(req.sequence, UART_STATUS_BAD_REQUEST);
+                break;
+            }
+
+            if (SdLogger_RequestFetch(req.sequence, &request) == 0u) {
+                SendError(req.sequence, UART_STATUS_BUSY);
+            }
             break;
         }
 

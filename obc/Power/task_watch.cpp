@@ -1,9 +1,6 @@
-// Task liveness bitmask. Groundwork for the IWDG supervisor, not yet armed
+// Task liveness bitmask consumed by the IWDG supervisor.
 #include "task_watch.hpp"
-#include "cmsis_os2.h"
 #include "stm32l4xx_hal.h"
-
-#include "cmsis_os2.h"
 
 namespace
 {
@@ -17,36 +14,39 @@ void task_watch_init(void)
 }
 
 /*
- * Called from task context on every loop pass. The critical section keeps the
- * read-modify-write atomic against preemption by a higher priority task.
+ * Called from task context on every loop pass.
  */
 void task_watch_checkin(uint32_t task_bit)
 {
     const uint32_t previous_primask = __get_PRIMASK();
     __disable_irq();
 
-    alive_mask |= task_bit;
+    //each task will call this function and will update this
+    alive_mask |= (task_bit & TASK_WATCH_ALL_TASKS);
 
     if (previous_primask == 0u) {
         __enable_irq();
     }
 }
-
-bool task_watch_all_alive(void)
-{
-    return (alive_mask & TASK_WATCH_ALL_TASKS) == TASK_WATCH_ALL_TASKS;
-}
-
-void task_watch_clear(void)
+/*
+ * check all the bits if all are 1 returns true . and clears the mask
+ * */
+bool task_watch_all_alive_and_clear(void)
 {
     const uint32_t previous_primask = __get_PRIMASK();
     __disable_irq();
 
-    alive_mask = 0u;
+    const bool all_alive = (alive_mask & TASK_WATCH_ALL_TASKS) == TASK_WATCH_ALL_TASKS;
+
+    if (all_alive) {
+        alive_mask = 0u;
+    }
 
     if (previous_primask == 0u) {
         __enable_irq();
     }
+
+    return all_alive;
 }
 
 uint32_t task_watch_get_mask(void)

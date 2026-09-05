@@ -447,7 +447,6 @@ void payload_collector_run()
 	//main loop when system is working
 	for (;;)
 	{
-		task_watch_checkin(TASK_WATCH_COLLECTOR);
 		next_check_ticks += check_period_ticks;
 		const bool schedule_available = SensorScheduleIsAvailable();
 		const uint32_t now_ms = HAL_GetTick();
@@ -495,6 +494,8 @@ void payload_collector_run()
 		}
 
 		PublishCollectorStatus();
+		// Report only after scheduling, sensor reads, and status publication finish.
+		task_watch_checkin(TASK_WATCH_COLLECTOR);
 		osDelayUntil(next_check_ticks);
 	}
 }

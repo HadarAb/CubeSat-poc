@@ -21,7 +21,7 @@
 #include "rtc.h"
 
 /* USER CODE BEGIN 0 */
-#include <time.h>
+
 /* USER CODE END 0 */
 
 RTC_HandleTypeDef hrtc;
@@ -141,6 +141,14 @@ void HAL_RTC_MspDeInit(RTC_HandleTypeDef* rtcHandle)
 }
 
 /* USER CODE BEGIN 1 */
+// Save the reset reason in DR3 and increase the persistent boot counter in DR1.
+void RTC_record_boot(uint32_t reset_flags)
+{
+	HAL_RTCEx_BKUPWrite(&hrtc, RTC_BKP_DR3, reset_flags & RTC_RESET_FLAGS_MASK);
+
+	const uint32_t current_boot_count = HAL_RTCEx_BKUPRead(&hrtc, RTC_BKP_DR1);
+	HAL_RTCEx_BKUPWrite(&hrtc, RTC_BKP_DR1, current_boot_count + 1u);
+}
 
 uint32_t RTC_get_boot_count(void)
 {
@@ -152,10 +160,98 @@ uint32_t RTC_get_reset_flags(void)
 	return HAL_RTCEx_BKUPRead(&hrtc, RTC_BKP_DR3);
 }
 
-// for DR2, we will use this later when handling the epoch time
+// DR2 remembers the last epoch received from the ground station.
 void RTC_set_last_epoch(uint32_t epoch)
 {
 	HAL_RTCEx_BKUPWrite(&hrtc, RTC_BKP_DR2, epoch);
+}
+
+static uint8_t RTC_is_leap_year(uint32_t year)
+{
+	return ((year % 4u) == 0u) && (((year % 100u) != 0u) || ((year % 400u) == 0u));
+}
+
+static uint32_t RTC_days_in_year(uint32_t year)
+{
+	if (RTC_is_leap_year(year)) {
+		return 366u;
+	}
+
+	return 365u;
+}
+
+static uint8_t RTC_days_in_month(uint32_t year, uint32_t month)
+{
+	static const uint8_t days_per_month[12] = {
+		31u, 28u, 31u, 30u, 31u, 30u, 31u, 31u, 30u, 31u, 30u, 31u
+	};
+	if ((month == 0u) || (month > 12u)) {
+		return 0u;
+	}
+
+	if ((month == 2u) && RTC_is_leap_year(year)) {
+		return 29u;
+	}
+
+	return days_per_month[month - 1u];
+}
+
+uint8_t RTC_set_epoch(uint32_t epoch)
+{
+	const uint32_t minimum_epoch = 946684800u;
+	const uint32_t maximum_epoch = 4102444799u;
+	if ((epoch < minimum_epoch) || (epoch > maximum_epoch)) {
+		return 0u;
+	}
+
+	// Convert whole days since 1970 into the RTC year, month and day fields.
+	const uint32_t epoch_days = epoch / 86400u;
+	uint32_t remaining_days = epoch_days;
+	uint32_t year = 1970u;
+	uint32_t days_in_year = RTC_days_in_year(year);
+	while (remaining_days >= days_in_year) {
+		remaining_days -= days_in_year;
+		++year;
+		days_in_year = RTC_days_in_year(year);
+	}
+
+	uint32_t month = 1u;
+	while (remaining_days >= RTC_days_in_month(year, month)) {
+		remaining_days -= RTC_days_in_month(year, month);
+		++month;
+	}
+
+	const uint32_t seconds_today = epoch % 86400u;
+	RTC_TimeTypeDef time = {0};
+	RTC_DateTypeDef date = {0};
+	time.Hours = (uint8_t)(seconds_today / 3600u);
+	time.Minutes = (uint8_t)((seconds_today % 3600u) / 60u);
+	time.Seconds = (uint8_t)(seconds_today % 60u);
+	time.DayLightSaving = RTC_DAYLIGHTSAVING_NONE;
+	time.StoreOperation = RTC_STOREOPERATION_RESET;
+	date.WeekDay = (uint8_t)(((epoch_days + 3u) % 7u) + 1u);
+	date.Month = (uint8_t)month;
+	date.Date = (uint8_t)(remaining_days + 1u);
+	date.Year = (uint8_t)(year - 2000u);
+
+	// Mark time invalid until both hardware fields were written successfully.
+	HAL_RTCEx_BKUPWrite(&hrtc, RTC_BKP_DR0, 0u);
+	if (HAL_RTC_SetTime(&hrtc, &time, RTC_FORMAT_BIN) != HAL_OK) {
+		return 0u;
+	}
+
+	if (HAL_RTC_SetDate(&hrtc, &date, RTC_FORMAT_BIN) != HAL_OK) {
+		return 0u;
+	}
+
+	RTC_set_last_epoch(epoch);
+	HAL_RTCEx_BKUPWrite(&hrtc, RTC_BKP_DR0, RTC_MAGIC_TIME_VALID);
+	return 1u;
+}
+
+uint8_t RTC_time_is_valid(void)
+{
+	return HAL_RTCEx_BKUPRead(&hrtc, RTC_BKP_DR0) == RTC_MAGIC_TIME_VALID;
 }
 
 uint32_t RTC_get_epoch(void)
@@ -163,28 +259,37 @@ uint32_t RTC_get_epoch(void)
 	RTC_TimeTypeDef sTime = {0};
 	RTC_DateTypeDef sDate = {0};
 
-	// HAL Requirement: MUST call GetTime and then GetDate to unlock the values
-	HAL_RTC_GetTime(&hrtc, &sTime, RTC_FORMAT_BIN);
-	HAL_RTC_GetDate(&hrtc, &sDate, RTC_FORMAT_BIN);
+	// HAL requires GetTime before GetDate to unlock the shadow registers.
+	if (HAL_RTC_GetTime(&hrtc, &sTime, RTC_FORMAT_BIN) != HAL_OK) {
+		return 0u;
+	}
 
-	// Convert HAL time structure to standard C time structure
-	struct tm timeinfo = {0};
+	if (HAL_RTC_GetDate(&hrtc, &sDate, RTC_FORMAT_BIN) != HAL_OK) {
+		return 0u;
+	}
 
-	// HAL Date.Year is 0-99 (representing 2000-2099).
-	// struct tm expects years since 1900. So 2000 - 1900 = 100.
-	timeinfo.tm_year = sDate.Year + 100;
+	const uint32_t year = 2000u + sDate.Year;
+	const uint8_t days_in_current_month = RTC_days_in_month(year, sDate.Month);
+	if ((days_in_current_month == 0u) || (sDate.Date == 0u) ||
+			(sDate.Date > days_in_current_month)) {
+		return 0u;
+	}
 
-	// HAL Date.Month is 1-12. struct tm expects 0-11.
-	timeinfo.tm_mon  = sDate.Month - 1;
+	// Count days since 1970 without mktime(), which depends on the PC timezone.
+	uint32_t days = 0u;
+	for (uint32_t current_year = 1970u; current_year < year; ++current_year) {
+		days += RTC_days_in_year(current_year);
+	}
 
-	timeinfo.tm_mday = sDate.Date;
-	timeinfo.tm_hour = sTime.Hours;
-	timeinfo.tm_min  = sTime.Minutes;
-	timeinfo.tm_sec  = sTime.Seconds;
+	for (uint32_t current_month = 1u; current_month < sDate.Month; ++current_month) {
+		days += RTC_days_in_month(year, current_month);
+	}
 
-	// Convert to Unix Epoch (seconds since Jan 1, 1970)
-	return (uint32_t)mktime(&timeinfo);
+	days += sDate.Date - 1u;
+	const uint32_t hours_in_seconds = (uint32_t)sTime.Hours * 3600u;
+	const uint32_t minutes_in_seconds = (uint32_t)sTime.Minutes * 60u;
+	const uint32_t seconds_today = hours_in_seconds + minutes_in_seconds + sTime.Seconds;
+	return (days * 86400u) + seconds_today;
 }
 
 /* USER CODE END 1 */
-

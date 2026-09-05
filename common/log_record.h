@@ -18,8 +18,8 @@ extern "C"
 #define LOG_RECORDS_PER_SECTOR 32u
 #define LOG_SECTOR_SIZE_BYTES 512u
 
-/* Reserved sensor IDs. High byte is the logical node ID, so RouteRecord
- * sends this record to the EPS directory. */
+/* Reserved OBC housekeeping IDs. Their high byte routes them to the EPS directory. */
+#define SENSOR_ID_RESET_CAUSE 0x03FEu
 #define SENSOR_ID_BOOT 0x03FFu
 
 	/*
