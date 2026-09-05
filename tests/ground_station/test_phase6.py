@@ -57,7 +57,7 @@ class Phase6Tests(unittest.TestCase):
             last_sync_epoch = None
             requested_volume = None
 
-            def fetch(self, from_epoch, to_epoch, volume):
+            def fetch(self, from_epoch, to_epoch, volume, record_handler=None):
                 self.requested_volume = volume
                 return [], FetchEnd(0, 0, 0)
 
@@ -79,6 +79,22 @@ class Phase6Tests(unittest.TestCase):
 
         self.assertEqual(len(records), 1)
         self.assertEqual(records[0].epoch_s, 150)
+        self.assertEqual((end.record_count, end.probe_count), (1, 14))
+
+    def test_fetch_streams_data_without_collecting_it(self):
+        station = GroundStation(serial_port=None)
+        station.start = lambda: None
+        station._send = lambda frame: None
+        received = []
+        record = LOG_RECORD.pack(150, 0x0201, 0, 4, b"\x01\x00\x00\x00", 0)
+        station.response_queue.put(Frame(MessageType.FETCH_DATA, 1, 0, record))
+        station.response_queue.put(Frame(MessageType.FETCH_END, 1, 0, FETCH_END_PAYLOAD.pack(Status.OK, 1, 14)))
+
+        records, end = station.fetch(100, 200, 0, record_handler=received.extend)
+
+        self.assertEqual(records, [])
+        self.assertEqual(len(received), 1)
+        self.assertEqual(received[0].epoch_s, 150)
         self.assertEqual((end.record_count, end.probe_count), (1, 14))
 
     def test_fetch_reports_storage_error(self):
