@@ -1,4 +1,4 @@
-/* Implements EPS SIM_SET/GET/LIST over the shared framed UART transport. */
+// Implements EPS SIM_SET/GET/LIST over the shared framed UART transport.
 #include "EpsUart.hpp"
 
 #include "../../common/uart/uart_protocol.h"
@@ -15,7 +15,7 @@ namespace
 UartTransport uart_transport;
 
 //just checks if the name is valid
-bool NameIsValid(const char name[VT_NAME_LEN])
+bool name_is_valid(const char name[VT_NAME_LEN])
 {
     if (name[0] == '\0')
     {
@@ -38,7 +38,7 @@ bool NameIsValid(const char name[VT_NAME_LEN])
 }
 
 
-bool TypeAndLengthAreValid(uint8_t type, uint8_t len)
+bool type_and_length_are_valid(uint8_t type, uint8_t len)
 {
     if ((type > static_cast<uint8_t>(VT_TYPE_BYTES))
         || (len == 0u) || (len > VT_VALUE_LEN))
@@ -51,7 +51,7 @@ bool TypeAndLengthAreValid(uint8_t type, uint8_t len)
 }
 
 // turn interrupts off
-uint32_t EnterCritical(void)
+uint32_t enter_critical(void)
 {
     const uint32_t previous_primask = __get_PRIMASK();
     __disable_irq();
@@ -59,7 +59,7 @@ uint32_t EnterCritical(void)
 }
 
 // turn interrupts on
-void ExitCritical(uint32_t previous_primask)
+void exit_critical(uint32_t previous_primask)
 {
     if (previous_primask == 0u)
     {
@@ -68,20 +68,20 @@ void ExitCritical(uint32_t previous_primask)
 }
 
 
-bool NamesMatch(const char left[VT_NAME_LEN], const char right[VT_NAME_LEN])
+bool names_match(const char left[VT_NAME_LEN], const char right[VT_NAME_LEN])
 {
     return std::memcmp(left, right, VT_NAME_LEN) == 0;
 }
 
 // find the index of the name (if it exists)
-uint16_t FindDenseIndex(const char name[VT_NAME_LEN])
+uint16_t find_dense_index(const char name[VT_NAME_LEN])
 {
-    const uint16_t count = VTable_Count();
+    const uint16_t count = vtable_count();
     VtEntry_t candidate = {};
 
     for (uint16_t index = 0u; index < count; ++index)
     {
-        if (VTable_At(index, &candidate) && NamesMatch(candidate.name, name))
+        if (vtable_at(index, &candidate) && names_match(candidate.name, name))
         {
             return index;
         }
@@ -90,7 +90,7 @@ uint16_t FindDenseIndex(const char name[VT_NAME_LEN])
 }
 
 // support function for full ack function
-void FillAckValue(UartSimAckPayload_t& ack, const VtEntry_t& entry)
+void fill_ack_value(UartSimAckPayload_t& ack, const VtEntry_t& entry)
 {
     std::memcpy(ack.name, entry.name, VT_NAME_LEN);
     ack.type = entry.type;
@@ -98,9 +98,11 @@ void FillAckValue(UartSimAckPayload_t& ack, const VtEntry_t& entry)
     std::memcpy(ack.value, entry.value, VT_VALUE_LEN);
 }
 
-// full ack function sends back the name and the value of the sensor that was
-// added to the vtable
-void SendAck(uint16_t sequence, uint8_t request_type, uint8_t status,
+/*
+ * full ack function sends back the name and the value of the sensor that was
+ * added to the vtable
+ */
+void send_ack(uint16_t sequence, uint8_t request_type, uint8_t status,
              uint16_t index, uint16_t count, const VtEntry_t* entry,
              const char* requested_name = nullptr)
 {
@@ -112,26 +114,28 @@ void SendAck(uint16_t sequence, uint8_t request_type, uint8_t status,
 
     if (entry != nullptr)
     {
-        FillAckValue(ack, *entry);
+        fill_ack_value(ack, *entry);
     }
     else if (requested_name != nullptr)
     {
         std::memcpy(ack.name, requested_name, VT_NAME_LEN);
     }
 
-    uart_transport.SendFrame(UART_MSG_SIM_ACK, sequence, &ack, sizeof(ack));
+    uart_transport.send_frame(UART_MSG_SIM_ACK, sequence, &ack, sizeof(ack));
 }
 
-// sequence msg id , payload msg it self
-// you get msg from pc to set a sensor value . you set it and send back an ack msg
-// containing what was set
-void HandleSet(uint16_t sequence, const uint8_t* payload, uint16_t payload_length)
+/*
+ * sequence msg id , payload msg it self
+ * you get msg from pc to set a sensor value . you set it and send back an ack msg
+ * containing what was set
+ */
+void handle_set(uint16_t sequence, const uint8_t* payload, uint16_t payload_length)
 {
 	// wrong struct send error
     if (payload_length != sizeof(UartSimSetPayload_t))
     {
-        SendAck(sequence, UART_MSG_SIM_SET, UART_SIM_STATUS_BAD_REQUEST,
-                0u, VTable_Count(), nullptr);
+        send_ack(sequence, UART_MSG_SIM_SET, UART_SIM_STATUS_BAD_REQUEST,
+                0u, vtable_count(), nullptr);
         return;
     }
 
@@ -140,100 +144,100 @@ void HandleSet(uint16_t sequence, const uint8_t* payload, uint16_t payload_lengt
     std::memcpy(&request, payload, sizeof(request));
 
     //check name
-    if (!NameIsValid(request.name))
+    if (!name_is_valid(request.name))
     {
-        SendAck(sequence, UART_MSG_SIM_SET, UART_SIM_STATUS_BAD_REQUEST,
-                0u, VTable_Count(), nullptr);
+        send_ack(sequence, UART_MSG_SIM_SET, UART_SIM_STATUS_BAD_REQUEST,
+                0u, vtable_count(), nullptr);
         return;
     }
     //check type
     if (request.type > static_cast<uint8_t>(VT_TYPE_BYTES))
     {
-        SendAck(sequence, UART_MSG_SIM_SET, UART_SIM_STATUS_BAD_TYPE,
-                0u, VTable_Count(), nullptr, request.name);
+        send_ack(sequence, UART_MSG_SIM_SET, UART_SIM_STATUS_BAD_TYPE,
+                0u, vtable_count(), nullptr, request.name);
         return;
     }
 
     //check len
-    if (!TypeAndLengthAreValid(request.type, request.len))
+    if (!type_and_length_are_valid(request.type, request.len))
     {
-        SendAck(sequence, UART_MSG_SIM_SET, UART_SIM_STATUS_BAD_REQUEST,
-                0u, VTable_Count(), nullptr, request.name);
+        send_ack(sequence, UART_MSG_SIM_SET, UART_SIM_STATUS_BAD_REQUEST,
+                0u, vtable_count(), nullptr, request.name);
         return;
     }
     //starting to store at the table so we disable interrupts
-    const uint32_t previous_primask = EnterCritical();
+    const uint32_t previous_primask = enter_critical();
     //set the value at the table
-    const bool stored = VTable_Set(request.name,static_cast<VtType_t>(request.type),
+    const bool stored = vtable_set(request.name,static_cast<VtType_t>(request.type),
                                    request.value, request.len, HAL_GetTick());
 
-    ExitCritical(previous_primask);
+    exit_critical(previous_primask);
 
     //if we failed to store ,send an error
     if (!stored)
     {
-        SendAck(sequence, UART_MSG_SIM_SET, UART_SIM_STATUS_TABLE_FULL,
-                0u, VTable_Count(), nullptr, request.name);
+        send_ack(sequence, UART_MSG_SIM_SET, UART_SIM_STATUS_TABLE_FULL,
+                0u, vtable_count(), nullptr, request.name);
         return;
     }
 
     //send back the sensor that was set in ack msg
     VtEntry_t entry = {};
-    const uint16_t index = FindDenseIndex(request.name);
-    (void)VTable_At(index, &entry);
-    SendAck(sequence, UART_MSG_SIM_SET, UART_SIM_STATUS_OK,
-            index, VTable_Count(), &entry);
+    const uint16_t index = find_dense_index(request.name);
+    (void)vtable_at(index, &entry);
+    send_ack(sequence, UART_MSG_SIM_SET, UART_SIM_STATUS_OK,
+            index, vtable_count(), &entry);
 }
 
 // get a value from the vtable
-void HandleGet(uint16_t sequence, const uint8_t* payload, uint16_t payload_length)
+void handle_get(uint16_t sequence, const uint8_t* payload, uint16_t payload_length)
 {
     if (payload_length != sizeof(UartSimGetPayload_t))
     {
-        SendAck(sequence, UART_MSG_SIM_GET, UART_SIM_STATUS_BAD_REQUEST,
-                0u, VTable_Count(), nullptr);
+        send_ack(sequence, UART_MSG_SIM_GET, UART_SIM_STATUS_BAD_REQUEST,
+                0u, vtable_count(), nullptr);
         return;
     }
 
     UartSimGetPayload_t request = {};
     std::memcpy(&request, payload, sizeof(request));
-    if (!NameIsValid(request.name))
+    if (!name_is_valid(request.name))
     {
-        SendAck(sequence, UART_MSG_SIM_GET, UART_SIM_STATUS_BAD_REQUEST,
-                0u, VTable_Count(), nullptr);
+        send_ack(sequence, UART_MSG_SIM_GET, UART_SIM_STATUS_BAD_REQUEST,
+                0u, vtable_count(), nullptr);
         return;
     }
 
     VtEntry_t entry = {};
-    const uint32_t previous_primask = EnterCritical();
-    const bool found = VTable_Get(request.name, &entry);
-    ExitCritical(previous_primask);
+    const uint32_t previous_primask = enter_critical();
+    const bool found = vtable_get(request.name, &entry);
+    exit_critical(previous_primask);
 
     if (!found)
     {
-        SendAck(sequence, UART_MSG_SIM_GET, UART_SIM_STATUS_UNKNOWN_KEY,
-                0u, VTable_Count(), nullptr, request.name);
+        send_ack(sequence, UART_MSG_SIM_GET, UART_SIM_STATUS_UNKNOWN_KEY,
+                0u, vtable_count(), nullptr, request.name);
         return;
     }
 
-    SendAck(sequence, UART_MSG_SIM_GET, UART_SIM_STATUS_OK,
-            FindDenseIndex(request.name), VTable_Count(), &entry);
+    send_ack(sequence, UART_MSG_SIM_GET, UART_SIM_STATUS_OK,
+            find_dense_index(request.name), vtable_count(), &entry);
 }
 
 // send all items that are in the vtable as ack msges
-void HandleList(uint16_t sequence, uint16_t payload_length)
+void handle_list(uint16_t sequence, uint16_t payload_length)
 {
     if (payload_length != 0u)
     {
-        SendAck(sequence, UART_MSG_SIM_LIST, UART_SIM_STATUS_BAD_REQUEST,
-                0u, VTable_Count(), nullptr);
+        send_ack(sequence, UART_MSG_SIM_LIST, UART_SIM_STATUS_BAD_REQUEST,
+                0u, vtable_count(), nullptr);
         return;
     }
 
-    const uint16_t count = VTable_Count();
+    const uint16_t count = vtable_count();
     if (count == 0u)
     {
-        SendAck(sequence, UART_MSG_SIM_LIST, UART_SIM_STATUS_OK,
+        send_ack(sequence, UART_MSG_SIM_LIST, UART_SIM_STATUS_OK,
                 0u, 0u, nullptr);
         return;
     }
@@ -241,9 +245,9 @@ void HandleList(uint16_t sequence, uint16_t payload_length)
     for (uint16_t index = 0u; index < count; ++index)
     {
         VtEntry_t entry = {};
-        if (VTable_At(index, &entry))
+        if (vtable_at(index, &entry))
         {
-            SendAck(sequence, UART_MSG_SIM_LIST, UART_SIM_STATUS_OK,
+            send_ack(sequence, UART_MSG_SIM_LIST, UART_SIM_STATUS_OK,
                     index, count, &entry);
         }
     }
@@ -251,45 +255,45 @@ void HandleList(uint16_t sequence, uint16_t payload_length)
 
 
 
-void HandleFrame(const UartReceivedFrame_t& frame)
+void handle_frame(const UartReceivedFrame_t& frame)
 {
     switch (frame.msg_type)
     {
         case UART_MSG_SIM_SET:
-            HandleSet(frame.sequence, frame.payload, frame.payload_length);
+            handle_set(frame.sequence, frame.payload, frame.payload_length);
             break;
         case UART_MSG_SIM_GET:
-            HandleGet(frame.sequence, frame.payload, frame.payload_length);
+            handle_get(frame.sequence, frame.payload, frame.payload_length);
             break;
         case UART_MSG_SIM_LIST:
-            HandleList(frame.sequence, frame.payload_length);
+            handle_list(frame.sequence, frame.payload_length);
             break;
         default:
-            SendAck(frame.sequence, frame.msg_type, UART_SIM_STATUS_BAD_REQUEST,
-                    0u, VTable_Count(), nullptr);
+            send_ack(frame.sequence, frame.msg_type, UART_SIM_STATUS_BAD_REQUEST,
+                    0u, vtable_count(), nullptr);
             break;
     }
 }
 }
 
 
-void EpsUart_Init(void)
+void eps_uart_init(void)
 {
-    uart_transport.Init();
+    uart_transport.init();
 }
 
-//recive frame and send it to handle function
-void EpsUart_Process(void)
+//receive frame and send it to handle function
+void eps_uart_process(void)
 {
     UartReceivedFrame_t frame = {};
-    while (uart_transport.TryReceive(&frame) != 0u)
+    while (uart_transport.try_receive(&frame) != 0u)
     {
-        HandleFrame(frame);
+        handle_frame(frame);
     }
 }
 
 
-extern "C" void EpsUart_HandleInterrupt(void)
+extern "C" void eps_uart_handle_interrupt(void)
 {
-    uart_transport.HandleInterrupt();
+    uart_transport.handle_interrupt();
 }

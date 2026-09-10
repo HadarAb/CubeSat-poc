@@ -142,7 +142,7 @@ void HAL_RTC_MspDeInit(RTC_HandleTypeDef* rtcHandle)
 
 /* USER CODE BEGIN 1 */
 // Save the reset reason in DR3 and increase the persistent boot counter in DR1.
-void RTC_record_boot(uint32_t reset_flags)
+void rtc_record_boot(uint32_t reset_flags)
 {
 	HAL_RTCEx_BKUPWrite(&hrtc, RTC_BKP_DR3, reset_flags & RTC_RESET_FLAGS_MASK);
 
@@ -150,37 +150,37 @@ void RTC_record_boot(uint32_t reset_flags)
 	HAL_RTCEx_BKUPWrite(&hrtc, RTC_BKP_DR1, current_boot_count + 1u);
 }
 
-uint32_t RTC_get_boot_count(void)
+uint32_t rtc_get_boot_count(void)
 {
 	return HAL_RTCEx_BKUPRead(&hrtc, RTC_BKP_DR1);
 }
 
-uint32_t RTC_get_reset_flags(void)
+uint32_t rtc_get_reset_flags(void)
 {
 	return HAL_RTCEx_BKUPRead(&hrtc, RTC_BKP_DR3);
 }
 
 // DR2 remembers the last epoch received from the ground station.
-void RTC_set_last_epoch(uint32_t epoch)
+void rtc_set_last_epoch(uint32_t epoch)
 {
 	HAL_RTCEx_BKUPWrite(&hrtc, RTC_BKP_DR2, epoch);
 }
 
-static uint8_t RTC_is_leap_year(uint32_t year)
+static uint8_t rtc_is_leap_year(uint32_t year)
 {
 	return ((year % 4u) == 0u) && (((year % 100u) != 0u) || ((year % 400u) == 0u));
 }
 
-static uint32_t RTC_days_in_year(uint32_t year)
+static uint32_t rtc_days_in_year(uint32_t year)
 {
-	if (RTC_is_leap_year(year)) {
+	if (rtc_is_leap_year(year)) {
 		return 366u;
 	}
 
 	return 365u;
 }
 
-static uint8_t RTC_days_in_month(uint32_t year, uint32_t month)
+static uint8_t rtc_days_in_month(uint32_t year, uint32_t month)
 {
 	static const uint8_t days_per_month[12] = {
 		31u, 28u, 31u, 30u, 31u, 30u, 31u, 31u, 30u, 31u, 30u, 31u
@@ -189,14 +189,14 @@ static uint8_t RTC_days_in_month(uint32_t year, uint32_t month)
 		return 0u;
 	}
 
-	if ((month == 2u) && RTC_is_leap_year(year)) {
+	if ((month == 2u) && rtc_is_leap_year(year)) {
 		return 29u;
 	}
 
 	return days_per_month[month - 1u];
 }
 
-uint8_t RTC_set_epoch(uint32_t epoch)
+uint8_t rtc_set_epoch(uint32_t epoch)
 {
 	const uint32_t minimum_epoch = 946684800u;
 	const uint32_t maximum_epoch = 4102444799u;
@@ -208,16 +208,16 @@ uint8_t RTC_set_epoch(uint32_t epoch)
 	const uint32_t epoch_days = epoch / 86400u;
 	uint32_t remaining_days = epoch_days;
 	uint32_t year = 1970u;
-	uint32_t days_in_year = RTC_days_in_year(year);
+	uint32_t days_in_year = rtc_days_in_year(year);
 	while (remaining_days >= days_in_year) {
 		remaining_days -= days_in_year;
 		++year;
-		days_in_year = RTC_days_in_year(year);
+		days_in_year = rtc_days_in_year(year);
 	}
 
 	uint32_t month = 1u;
-	while (remaining_days >= RTC_days_in_month(year, month)) {
-		remaining_days -= RTC_days_in_month(year, month);
+	while (remaining_days >= rtc_days_in_month(year, month)) {
+		remaining_days -= rtc_days_in_month(year, month);
 		++month;
 	}
 
@@ -244,17 +244,17 @@ uint8_t RTC_set_epoch(uint32_t epoch)
 		return 0u;
 	}
 
-	RTC_set_last_epoch(epoch);
+	rtc_set_last_epoch(epoch);
 	HAL_RTCEx_BKUPWrite(&hrtc, RTC_BKP_DR0, RTC_MAGIC_TIME_VALID);
 	return 1u;
 }
 
-uint8_t RTC_time_is_valid(void)
+uint8_t rtc_time_is_valid(void)
 {
 	return HAL_RTCEx_BKUPRead(&hrtc, RTC_BKP_DR0) == RTC_MAGIC_TIME_VALID;
 }
 
-uint32_t RTC_get_epoch(void)
+uint32_t rtc_get_epoch(void)
 {
 	RTC_TimeTypeDef sTime = {0};
 	RTC_DateTypeDef sDate = {0};
@@ -269,7 +269,7 @@ uint32_t RTC_get_epoch(void)
 	}
 
 	const uint32_t year = 2000u + sDate.Year;
-	const uint8_t days_in_current_month = RTC_days_in_month(year, sDate.Month);
+	const uint8_t days_in_current_month = rtc_days_in_month(year, sDate.Month);
 	if ((days_in_current_month == 0u) || (sDate.Date == 0u) ||
 			(sDate.Date > days_in_current_month)) {
 		return 0u;
@@ -278,11 +278,11 @@ uint32_t RTC_get_epoch(void)
 	// Count days since 1970 without mktime(), which depends on the PC timezone.
 	uint32_t days = 0u;
 	for (uint32_t current_year = 1970u; current_year < year; ++current_year) {
-		days += RTC_days_in_year(current_year);
+		days += rtc_days_in_year(current_year);
 	}
 
 	for (uint32_t current_month = 1u; current_month < sDate.Month; ++current_month) {
-		days += RTC_days_in_month(year, current_month);
+		days += rtc_days_in_month(year, current_month);
 	}
 
 	days += sDate.Date - 1u;

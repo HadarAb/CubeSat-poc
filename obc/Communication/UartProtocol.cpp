@@ -1,4 +1,4 @@
-/* Connects OBC-specific UART functions to the shared framed UART transport. */
+// Connects OBC-specific UART functions to the shared framed UART transport.
 #include "UartProtocol.hpp"
 
 #include "../../common/uart/uart_transport.hpp"
@@ -11,30 +11,30 @@ uint16_t debug_sequence = 0u;
 }
 
 
-void UartProtocol_Init(void)
+void uart_protocol_init(void)
 {
     debug_sequence = 0u;
-    uart_transport.Init();
+    uart_transport.init();
 }
 
 
-/* check if we got a full message already  */
-extern "C" uint8_t UartProtocol_TryReceiveRequest(UartRequest_t* out)
+// check if we got a full message already
+extern "C" uint8_t uart_protocol_try_receive_request(UartRequest_t* out)
 {
-    return uart_transport.TryReceive(out);
+    return uart_transport.try_receive(out);
 }
 
 
-/* helps you send a full frame threw UART */
-uint8_t UartProtocol_SendFrame(uint8_t msg_type, uint16_t sequence,
+// helps you send a full frame through UART
+uint8_t uart_protocol_send_frame(uint8_t msg_type, uint16_t sequence,
                                const void* payload, uint16_t payload_length)
 {
-    return uart_transport.SendFrame(msg_type, sequence, payload, payload_length);
+    return uart_transport.send_frame(msg_type, sequence, payload, payload_length);
 }
 
 
-/* debug text to send threw UART */
-void SendUartMsg(const char* text)
+// debug text to send through UART
+void send_uart_msg(const char* text)
 {
     if (text == nullptr)
     {
@@ -48,11 +48,11 @@ void SendUartMsg(const char* text)
     }
 
     ++debug_sequence;
-    UartProtocol_SendFrame(UART_MSG_DEBUG_TEXT, debug_sequence, text, length);
+    uart_protocol_send_frame(UART_MSG_DEBUG_TEXT, debug_sequence, text, length);
 }
 
 
-extern "C" void UartProtocol_HandleInterrupt(void)
+extern "C" void uart_protocol_handle_interrupt(void)
 {
-    uart_transport.HandleInterrupt();
+    uart_transport.handle_interrupt();
 }

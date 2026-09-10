@@ -47,7 +47,7 @@ telemetry with a ground station over UART.
 common/             Shared protocol headers, CRC routines, VTable module
 obc/                OBC firmware (STM32CubeIDE project, FreeRTOS)
 eps/                EPS firmware (STM32CubeIDE project, bare-metal)
-payload/             Payload firmware (STM32CubeIDE project, bare-metal)
+payload/            Payload firmware (STM32CubeIDE project, bare-metal)
 ground_station/     Python ground station CLI
 simulators/         Shared PC simulator engine (models, protocol, transport)
 payload_sim.py      Payload simulator entry point
@@ -73,7 +73,7 @@ UartFrameHeader_t (11 bytes) | payload (0..64 bytes) | crc32 (4 bytes)
 
 `UartFrameHeader_t` carries a start marker (`0xA55A`), a message type, a
 sequence number, a millisecond timestamp, and the payload length. The CRC-32
-(`Protocol_Crc32`, CRC-32/ISO-HDLC) covers the header and payload.
+(`protocol_crc32`, CRC-32/ISO-HDLC) covers the header and payload.
 
 Message types (`common/uart/uart_protocol.h`):
 
@@ -83,9 +83,9 @@ Message types (`common/uart/uart_protocol.h`):
 | `PAYLOAD` | `0x02` | GS → OBC → GS | Request/return latest cached payload snapshot |
 | `BATTERY` | `0x03` | GS → OBC → GS | Request/return cached battery percentage |
 | `AUTO_STATUS` | `0x04` | OBC → GS | Unsolicited periodic status report |
-| `SET_TIME` | `0x05` | GS → OBC | Set the OBC's RTC from a Unix epoch |
+| `SET_TIME` | `0x05` | GS → OBC → GS | Set the OBC's RTC from a Unix epoch; acknowledged by an empty echo |
 | `FETCH` | `0x06` | GS → OBC | Request stored records in a time range |
-| `FETCH_DATA` | `0x07` | OBC → GS | One stored record from a `FETCH` |
+| `FETCH_DATA` | `0x07` | OBC → GS | Up to four stored records from a `FETCH` |
 | `FETCH_END` | `0x08` | OBC → GS | Terminates a fetch stream, reports record/probe counts |
 | `SIM_SET` / `SIM_GET` / `SIM_LIST` / `SIM_ACK` | `0x40`-`0x43` | simulator ↔ EPS/Payload | VTable maintenance (see below) |
 | `DEBUG_TEXT` | `0x70` | OBC → GS | Free-form firmware log text, CRC-protected |
@@ -94,23 +94,42 @@ Message types (`common/uart/uart_protocol.h`):
 `STATUS` and `AUTO_STATUS` share `UartStatusPayload_t`: power state, battery
 percentage and validity, Payload/EPS online flags, SD logger state, dropped
 frame/overrun counters, I2C and CRC failure counters per node, and SD error
-count. `PAYLOAD` and `BATTERY` share the legacy `UartPayload_t` layout.
+count, plus a flags byte carrying the four-bit task-alive mask and the
+time-valid marker. `PAYLOAD` and `BATTERY` share the legacy `UartPayload_t`
+layout.
 
 Every struct on the wire is `__attribute__((packed))` and its size is
 enforced at compile time with `static_assert`, so a firmware and
 ground-station build that disagree on layout fail to compile rather than
 silently miscommunicate.
 
+### Time synchronization
+
+The OBC reports clock validity in bit 7 (`OBC_FLAG_TIME_VALID`) of the status
+flags byte; bits 0–3 carry the task-alive mask. When the ground station sees a
+`STATUS` or `AUTO_STATUS` frame with that bit clear, it pushes the host's
+wall-clock time as a `SET_TIME` request without operator action, one attempt per
+invalid streak so a rejecting OBC is not retried in a loop. `time sync` triggers
+the same push manually. `rtc_set_epoch` converts the epoch to RTC calendar
+fields, rejects values outside 2000-01-01…2099-12-31, and clears the validity
+marker in backup register `DR0` until both hardware writes succeed, so an
+interrupted update cannot leave the RTC marked valid with a partial time.
+
 ### Fetch protocol (SD-backed history)
 
 `FETCH` requests an inclusive `[from_epoch_s, to_epoch_s]` range from one of
 two on-SD volumes (`0` = payload telemetry, `1` = housekeeping) with an
-optional record cap. The OBC's SD-logger task locates the first matching
-record with a binary search over the telemetry file, then streams matches
-back as a sequence of `FETCH_DATA` frames, followed by one `FETCH_END` frame
-carrying the returned record count and the binary-search probe count. The
-ground station's `fetch <from> <to> payload|hk` command drives this; `--boot`
-filters the housekeeping stream down to boot-counter and reset-cause records.
+optional record cap. `BeginFetch` first syncs the active writer and latches its
+size, so the fetch reads a stable snapshot while logging continues underneath
+it. The SD-logger task then walks the directory's rotated file range and runs a
+per-file binary search for the first record at or after `from_epoch_s`,
+streaming matches back as `FETCH_DATA` frames that each pack up to four whole
+16-byte records into the 64-byte payload, one frame per 10 ms tick. A closing
+`FETCH_END` frame carries the record count and the number of binary-search
+probes, which the ground station prints against the record total to show the
+search cost. The `fetch <from> <to> payload|hk` command drives this; `--boot`
+filters the stream down to boot-counter and reset-cause records, and `--plot`
+charts the result.
 
 ### I2C register protocol (OBC ↔ EPS/Payload)
 
@@ -135,7 +154,7 @@ This lets the OBC poll individual sensor keys on a per-key schedule rather
 than reading one large fixed struct, and lets it discover the complete set
 of keys a node currently publishes by iterating `REG_VT_AT`/`REG_VT_ENTRY`
 over `[0, REG_VT_COUNT)`. Both wire structs end in a CRC-16/CCITT-FALSE
-(`Protocol_Crc16`) covering the preceding bytes.
+(`protocol_crc16`) covering the preceding bytes.
 
 ### VTable (key/value telemetry store)
 
@@ -146,7 +165,7 @@ value, a last-updated timestamp, and in-use/fresh flags. Entries are created
 or updated by a PC simulator over UART (`SIM_SET`) and read back by the OBC
 over I2C by key (`REG_VT_SELECT`/`REG_VT_VALUE`) or by index for discovery.
 Entries are never deleted, so no tombstone handling is needed — a key lives
-until the node reboots. `VTable_HashName` (FNV-1a) gives a stable short ID
+until the node reboots. `vtable_hash_name` (FNV-1a) gives a stable short ID
 for a key name, used when persisting sensor identity to the SD log.
 
 The simulator-facing UART messages `SIM_SET`/`SIM_GET`/`SIM_LIST`/`SIM_ACK`
@@ -200,7 +219,7 @@ job (`AUTO_STATUS`, each polled sensor key, `SD_FLUSH`) and by the current
 power state. A period of zero disables that job entirely in that state —
 in `CRITICAL`, the two solar-panel jobs are disabled outright rather than
 merely slowed, and every other job runs at its slowest cadence. `FULL`
-uses the fastest cadences. `Schedule_TryTakeDue` advances each job's next
+uses the fastest cadences. `schedule_try_take_due` advances each job's next
 deadline from the deadline itself, not from the call time, so a late poll
 does not shift the whole cadence forward, and a job that falls more than one
 period behind resynchronizes instead of firing repeatedly to catch up.
@@ -239,7 +258,7 @@ Both are bare-metal STM32 projects (no RTOS) built around the same pattern:
   and CRC validation happen in the main loop.
 - Both boards run at the same UART framing and CRC as the ground-station
   link, using the shared `common/uart/` headers, so the same
-  `UartReceivedFrame_t` parser and `Protocol_Crc32` implementation serve all
+  `UartReceivedFrame_t` parser and `protocol_crc32` implementation serve all
   three firmware targets.
 
 The Payload's standard VTable keys are `TEMP`, `TDOSE`, `SEL`, and `NRESET`.
@@ -251,12 +270,16 @@ The EPS publishes `VBAT`, `TEMP`, and, in solar mode, `SP0_T..SP5_T` /
 `ground_station/ground_station.py` is an interactive CLI that opens the
 NUCLEO virtual COM port and exchanges the framed UART protocol described
 above. Available commands: `status`, `payload`, `battery`,
-`fetch <from> <to> payload|hk [--boot]`, `help`, `quit`. It runs a continuous
-receive loop so unsolicited `AUTO_STATUS` frames and `DEBUG_TEXT` messages
-(`[OBC] ...`) are displayed as they arrive, independent of command/response
-traffic. `ground_station/plotting.py` and `ground_station/sensors.py`
-provide supporting data handling. `ground_station/protocol.py` implements
-frame encoding/decoding shared between the CLI and its test suite.
+`fetch <from> <to> [payload|hk] [--boot] [--plot]`, `time sync`, `help`,
+`quit`. It runs a continuous receive loop so unsolicited `AUTO_STATUS` frames
+and `DEBUG_TEXT` messages (`[OBC] ...`) are displayed as they arrive,
+independent of command/response traffic. Fetched records are rendered in
+batches of 100 as they arrive rather than accumulated in full, so a large range
+prints incrementally and at bounded memory cost; plotting is applied to fetches
+up to 10,000 records. `ground_station/plotting.py` draws those charts and
+`ground_station/sensors.py` maps sensor IDs to node, key, and type.
+`ground_station/protocol.py` implements frame encoding/decoding shared between
+the CLI and its test suite.
 
 ```powershell
 cd ground_station
@@ -299,9 +322,18 @@ Python unit tests (ground station, simulators) require no hardware:
 python -m unittest discover -s tests -t . -p "test_*.py" -v
 ```
 
-C++ unit tests for shared `common/` modules (CRC-16, VTable) live under
-`tests/common/` and `tests/payload/` and are built as host-side (non-STM32)
-targets independent of the firmware toolchain.
+C++ unit tests for the shared `common/` modules (CRC-16, VTable) live under
+`tests/common/` and `tests/payload/`. They are standalone host programs,
+independent of the firmware toolchain — each is one translation unit plus,
+where needed, the VTable implementation:
+
+```bash
+g++ -std=c++17 tests/payload/test_vtable.cpp -o test_vtable && ./test_vtable
+```
+
+```bash
+g++ -std=c++17 tests/common/test_crc16.cpp common/vtable/vtable.c -o test_crc16 && ./test_crc16
+```
 
 ## CubeMX regeneration (OBC)
 
@@ -315,5 +347,5 @@ clearing `obc/Debug/` and re-running Project > Clean, and running
 `obc/check_fatfs_layout.sh` as a guard before flashing. The guard checks for
 the duplicate FatFs tree, SPI wiring reverting to a stub, SPI1 timing
 settings reverting to HAL defaults, an LED init reappearing on the SPI1_SCK
-pin, the FreeRTOS entry point losing its call to `ObcController_Process()`,
+pin, the FreeRTOS entry point losing its call to `obc_controller_process()`,
 and `ffconf.h` drifting out of sync with `obc.ioc`.

@@ -248,7 +248,7 @@ void EXTI15_10_IRQHandler(void)
   */
 void USART2_IRQHandler(void)
 {
-  PayloadUart_HandleInterrupt();
+  payload_uart_handle_interrupt();
 }
 
 /* USER CODE END 1 */

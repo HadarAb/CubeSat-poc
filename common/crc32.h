@@ -11,9 +11,9 @@ extern "C" {
  * CRC-32/ISO-HDLC (the same result as zlib.crc32).
  *
  * Required test vector:
- *   Protocol_Crc32("123456789", 9) == 0xCBF43926
+ *   protocol_crc32("123456789", 9) == 0xCBF43926
  */
-static inline uint32_t Protocol_Crc32(
+static inline uint32_t protocol_crc32(
     const uint8_t* bytes,
     uint32_t size)
 {

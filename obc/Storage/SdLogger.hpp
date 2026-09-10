@@ -17,16 +17,16 @@ typedef enum
 } SdLoggerState_t;
 
 // FreeRTOS task entry. All helper FatFs calls execute in this task's context.
-void SdLogger_Task(void* argument);
+void sd_logger_task(void* argument);
 
 // Read only status used by GroundComm to report SD state changes over UART.
-SdLoggerState_t SdLogger_GetState(void);
+SdLoggerState_t sd_logger_get_state(void);
 
-uint32_t SdLogger_GetErrorCount(void);
-uint32_t SdLogger_GetFlushCount(void);
+uint32_t sd_logger_get_error_count(void);
+uint32_t sd_logger_get_flush_count(void);
 
 // Queues one validated FETCH request for the SD Logger task. Returns 1 when accepted.
-uint8_t SdLogger_RequestFetch(uint16_t sequence, const UartFetchPayload_t* request);
+uint8_t sd_logger_request_fetch(uint16_t sequence, const UartFetchPayload_t* request);
 
 #ifdef __cplusplus
 }

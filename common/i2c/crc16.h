@@ -16,9 +16,9 @@ extern "C" {
  * Final XOR:     0x0000
  *
  * Required test vector:
- *   Protocol_Crc16("123456789", 9) == 0x29B1
+ *   protocol_crc16("123456789", 9) == 0x29B1
  */
-static inline uint16_t Protocol_Crc16(const uint8_t* bytes, uint32_t size)
+static inline uint16_t protocol_crc16(const uint8_t* bytes, uint32_t size)
 {
     uint16_t crc = 0xFFFFu;
 

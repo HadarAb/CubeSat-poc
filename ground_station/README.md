@@ -36,7 +36,7 @@ state, battery, node availability, SD logger state, dropped records, overruns,
 I2C/CRC failures, and SD errors. Sensor measurements remain in `PAYLOAD` frames.
 The receiver runs continuously and keeps automatic reports separate from replies.
 
-Firmware calls to `SendUartMsg("my text")` appear as `[OBC] my text`. Debug
+Firmware calls to `send_uart_msg("my text")` appear as `[OBC] my text`. Debug
 text is sent inside a normal CRC-protected frame, so it does not corrupt
 command or telemetry traffic. Text longer than 64 bytes is truncated.
 

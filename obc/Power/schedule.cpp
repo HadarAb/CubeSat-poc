@@ -40,7 +40,7 @@ constexpr uint32_t period_ms[SCHEDULE_ITEM_COUNT][SAT_STATE_COUNT] = {
 }
 
 // Return the period for an item and state. Zero means the item is disabled
-uint32_t Schedule_GetPeriodMs(ScheduleItemId_t item, SatState_t state)
+uint32_t schedule_get_period_ms(ScheduleItemId_t item, SatState_t state)
 {
     if ((static_cast<uint32_t>(item) >= static_cast<uint32_t>(SCHEDULE_ITEM_COUNT))
         || (static_cast<uint32_t>(state) >= static_cast<uint32_t>(SAT_STATE_COUNT))) {
@@ -52,7 +52,7 @@ uint32_t Schedule_GetPeriodMs(ScheduleItemId_t item, SatState_t state)
 
 
 // Reset every schedule item to its initial state
-void Schedule_Init(void)
+void schedule_init(void)
 {
     for (uint32_t index = 0u; index < static_cast<uint32_t>(SCHEDULE_ITEM_COUNT); ++index) {
         next_due_ms[index] = 0u;
@@ -66,9 +66,9 @@ void Schedule_Init(void)
  * Return true once when an item is due, then move its next due time forward.
  * The signed cast makes the comparison safe when HAL_GetTick wraps at 2^32.
  */
-bool Schedule_TryTakeDue(ScheduleItemId_t item, SatState_t state, uint32_t now_ticks)
+bool schedule_try_take_due(ScheduleItemId_t item, SatState_t state, uint32_t now_ticks)
 {
-    const uint32_t period = Schedule_GetPeriodMs(item, state);
+    const uint32_t period = schedule_get_period_ms(item, state);
 
     if ((period == item_disabled_ms) || !schedule_ready) {
         return false;

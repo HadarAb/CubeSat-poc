@@ -129,7 +129,7 @@ void MX_FREERTOS_Init(void); /* (MISRA C 2004 rule 8.1) */
 void MX_FREERTOS_Init(void) {
   /* USER CODE BEGIN Init */
 
-	PayloadCollector_Init();
+	payload_collector_init();
 	power_state_init();
 	task_watch_init();
 
@@ -244,7 +244,7 @@ void StartTask_PayloadCol(void *argument)
 void StartTask_SD_Logger(void *argument)
 {
   /* USER CODE BEGIN StartTask_SD_Logger */
-	SdLogger_Task(argument);
+	sd_logger_task(argument);
   /* USER CODE END StartTask_SD_Logger */
 }
 
@@ -262,7 +262,7 @@ void StartTask_PowerMgmt(void *argument)
   for(;;)
   {
 	  Snapshot snap;
-	  if (PayloadCollector_GetSnapshot(EPS_NODE_ID, &snap)) {
+	  if (payload_collector_get_snapshot(EPS_NODE_ID, &snap)) {
 		  power_state_update(snap.data.battery_pct, snap.battery_valid);
 	  } else {
 		  power_state_update(0u, false);
@@ -298,7 +298,7 @@ void StartTask_GroundComm(void *argument)
   // Infinite loop
   for(;;)
   {
-    ObcController_Process();
+    obc_controller_process();
     task_watch_checkin(TASK_WATCH_GROUND_COMM);
     osDelay(1);
   }

@@ -107,12 +107,14 @@ typedef struct __attribute__((packed))
     uint32_t sd_error_count;
 } UartStatusPayload_t;
 
-// when you want to set a sensor value / or make a new sensor value
-// watch out that all name and value have fixed size
+/*
+ * when you want to set a sensor value / or make a new sensor value
+ * watch out that all name and value have fixed size
+ */
 typedef struct __attribute__((packed))
 {
     char name[VT_NAME_LEN];		 // Temp , vbat , sel
-    uint8_t type;                // anumber that later we will translate to data type. from vtable.h
+    uint8_t type;                // a number that later we will translate to data type. from vtable.h
     uint8_t len;                 // how many bytes from value are valid .
     uint8_t value[VT_VALUE_LEN]; // the value it self
 } UartSimSetPayload_t;
@@ -134,7 +136,7 @@ typedef struct __attribute__((packed))
     uint8_t status;				//success or error
     uint8_t request_type;		//reply to SET, GET, or LIST
     uint16_t index;				//its index in the vtable
-    uint16_t count;				//total entries / diffrent names
+    uint16_t count;				//total entries / different names
     char name[VT_NAME_LEN];
     uint8_t type;
     uint8_t len;

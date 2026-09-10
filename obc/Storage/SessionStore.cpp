@@ -12,12 +12,12 @@
 
 namespace
 {
-constexpr uint32_t SessionMagic = 0x53534553u; // "SESS" in little endian.
-constexpr uint16_t SessionVersion = 1u;
+constexpr uint32_t session_magic = 0x53534553u; // "SESS" in little endian.
+constexpr uint16_t session_version = 1u;
 /*
  * Filenames are generated per directory (e.g. "PAYLOAD/SESSION.BIN").
  */
-//constexpr char SessionFilename[] = "SESSION.BIN";
+//constexpr char session_filename[] = "SESSION.BIN";
 
 // Exact 32-byte format of one metadata copy inside SESSION.BIN.
 typedef struct __attribute__((packed))
@@ -43,12 +43,12 @@ static_assert(offsetof(SessionSlot_t, crc32) == 28u, "SESSION.BIN CRC must stay 
 bool session_slot_is_valid(const SessionSlot_t& slot)
 {
     //checks that the SD card data is valid for our format and not corrupted
-    if ((slot.magic != SessionMagic) || (slot.version != SessionVersion) || (slot.size != sizeof(SessionSlot_t))) {
+    if ((slot.magic != session_magic) || (slot.version != session_version) || (slot.size != sizeof(SessionSlot_t))) {
         return false;
     }
 
     // Recalculate the first 28 bytes and compare them with the saved CRC.
-    const uint32_t expected_crc = Protocol_Crc32(reinterpret_cast<const uint8_t*>(&slot), static_cast<uint32_t>(offsetof(SessionSlot_t, crc32)));
+    const uint32_t expected_crc = protocol_crc32(reinterpret_cast<const uint8_t*>(&slot), static_cast<uint32_t>(offsetof(SessionSlot_t, crc32)));
     return expected_crc == slot.crc32;
 }
 
@@ -71,7 +71,7 @@ void copy_slot_to_metadata(const SessionSlot_t& slot, SessionMetadata_t* metadat
 }
 
 // Loads the newest valid SESSION.BIN slot for a specific volume. A missing file is not an error.
-bool SessionStore_Load(const char* dir_path, SessionMetadata_t* metadata, bool* valid)
+bool session_store_load(const char* dir_path, SessionMetadata_t* metadata, bool* valid)
 {
 	if ((dir_path == nullptr) || (metadata == nullptr) || (valid == nullptr)) {
 		return false;
@@ -137,22 +137,22 @@ bool SessionStore_Load(const char* dir_path, SessionMetadata_t* metadata, bool* 
 }
 
 // Writes the metadata to the older slot of the specified volume's SESSION.BIN.
-bool SessionStore_Save(const char* dir_path, SessionMetadata_t* metadata)
+bool session_store_save(const char* dir_path, SessionMetadata_t* metadata)
 {
 	if ((dir_path == nullptr) || (metadata == nullptr)) {
 		return false;
 	}
 
     SessionSlot_t next = {};
-    next.magic = SessionMagic;
-    next.version = SessionVersion;
+    next.magic = session_magic;
+    next.version = session_version;
     next.size = sizeof(SessionSlot_t);
     next.generation = metadata->generation + 1u;
     next.session_id = metadata->session_id;
     next.active_file_index = metadata->active_file_index;
     next.next_file_index = metadata->next_file_index;
     next.last_committed_time_ms = metadata->last_committed_time_ms;
-    next.crc32 = Protocol_Crc32(reinterpret_cast<const uint8_t*>(&next), static_cast<uint32_t>(offsetof(SessionSlot_t, crc32)));
+    next.crc32 = protocol_crc32(reinterpret_cast<const uint8_t*>(&next), static_cast<uint32_t>(offsetof(SessionSlot_t, crc32)));
 
 	/*
 	 * Build the target path from the directory context.
@@ -169,8 +169,10 @@ bool SessionStore_Save(const char* dir_path, SessionMetadata_t* metadata)
 		return false;
 	}
 
-    // Even generations use slot 0 and odd generations use slot 1.
-    //in simple words , witch slot to write 0 or 1
+    /*
+     * Even generations use slot 0 and odd generations use slot 1.
+     * in simple words , which slot to write 0 or 1
+     */
     const uint32_t slot_index = next.generation & 1u;
     // open the currect file
     result = f_lseek(&file, static_cast<FSIZE_t>(slot_index * sizeof(SessionSlot_t)));

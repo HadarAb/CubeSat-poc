@@ -167,7 +167,7 @@ void DebugMon_Handler(void)
 void USART2_IRQHandler(void)
 {
   /* USER CODE BEGIN USART2_IRQn 0 */
-  UartProtocol_HandleInterrupt();
+  uart_protocol_handle_interrupt();
   /* USER CODE END USART2_IRQn 0 */
   HAL_UART_IRQHandler(&huart2);
   /* USER CODE BEGIN USART2_IRQn 1 */

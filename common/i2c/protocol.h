@@ -28,12 +28,12 @@ extern "C" {
  *   Discover what a node has: read REG_VT_COUNT, then for each index
  *                             write REG_VT_AT + index, then read REG_VT_ENTRY
  */
-#define REG_WHOAMI     0x00u  /* read 1 byte, the logical node ID */
-#define REG_VT_COUNT   0x30u  /* read 2 bytes, live VTable entry count */
-#define REG_VT_SELECT  0x31u  /* write VT_NAME_LEN bytes, select by key name */
-#define REG_VT_VALUE   0x32u  /* read VT_VALUE_WIRE_SIZE bytes from the selection */
-#define REG_VT_AT      0x33u  /* write 2 bytes, select by index */
-#define REG_VT_ENTRY   0x34u  /* read VT_ENTRY_WIRE_SIZE bytes from the selection */
+#define REG_WHOAMI     0x00u  // read 1 byte, the logical node ID
+#define REG_VT_COUNT   0x30u  // read 2 bytes, live VTable entry count
+#define REG_VT_SELECT  0x31u  // write VT_NAME_LEN bytes, select by key name
+#define REG_VT_VALUE   0x32u  // read VT_VALUE_WIRE_SIZE bytes from the selection
+#define REG_VT_AT      0x33u  // write 2 bytes, select by index
+#define REG_VT_ENTRY   0x34u  // read VT_ENTRY_WIRE_SIZE bytes from the selection
 
 /*
  * Legacy bulk-read registers. Retired by the VTable registers above and served

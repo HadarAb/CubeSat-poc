@@ -15,10 +15,10 @@ static FATFS sd_filesystem;
 
 namespace
 {
-constexpr uint32_t TelemetryFileSizeBytes = 1024u * 1024u;
-constexpr uint32_t MinimumFreeBytes = 2u * 1024u * 1024u;
-constexpr uint32_t SpaceRequiredForNewFile = TelemetryFileSizeBytes + MinimumFreeBytes;
-constexpr uint32_t MaximumFileIndex = 9999u;
+constexpr uint32_t telemetry_file_size_bytes = 1024u * 1024u;
+constexpr uint32_t minimum_free_bytes = 2u * 1024u * 1024u;
+constexpr uint32_t space_required_for_new_file = telemetry_file_size_bytes + minimum_free_bytes;
+constexpr uint32_t maximum_file_index = 9999u;
 
 /*
  * Context structure for one telemetry directory.
@@ -136,8 +136,10 @@ bool scan_file_indexes(DirectoryCtx_t* ctx, uint32_t* lowest_index, uint32_t* hi
     DIR directory = {};
     FILINFO info = {};
 
-	// Open the directory of the specific directory (Payload or EPS)
-    // and put it on directory verb on ram
+	/*
+	 * Open the directory of the specific directory (Payload or EPS)
+	 * and put it on directory verb on ram
+	 */
 	FRESULT result = f_opendir(&directory, ctx->directory_path);
     if (result != FR_OK) {
         return false;
@@ -245,8 +247,10 @@ bool read_record_at(uint32_t record_index, LogRecord_t* record)
     }
 
     UINT bytes_read = 0u;
-    // read from the bin file exactly the file at the index
-    // put what we found inside record
+    /*
+     * read from the bin file exactly the file at the index
+     * put what we found inside record
+     */
     const FRESULT read_result = f_read(source, record, sizeof(LogRecord_t), &bytes_read);
     if (fetch_cursor.reader_uses_active_file && (f_lseek(source, writer_end) != FR_OK)) {
         return false;
@@ -289,9 +293,11 @@ bool switch_rotated_snapshot_to_reader(void)
             * sizeof(LogRecord_t)) == FR_OK;
 }
 
-// there is a global starting time (from_epoch)
-// this function seeks for the first record that its time is >= from_epoch
-// and start global verb and global offset to start from this file
+/*
+ * there is a global starting time (from_epoch)
+ * this function seeks for the first record that its time is >= from_epoch
+ * and start global verb and global offset to start from this file
+ */
 bool seek_to_first_requested_record(void)
 {
     uint32_t low = 0u;
@@ -328,8 +334,10 @@ bool seek_to_first_requested_record(void)
     return f_lseek(&fetch_cursor.reader, offset) == FR_OK;
 }
 
-// opens next bin file finds its first and last record and updates global verbs
-// should be used when you get to the end of the file and you need to move to the next one
+/*
+ * opens next bin file finds its first and last record and updates global verbs
+ * should be used when you get to the end of the file and you need to move to the next one
+ */
 OpenRangeFileResult open_next_range_file(void)
 {
 	// check if next file index is still in range
@@ -476,7 +484,7 @@ bool ensure_space_for_new_file(DirectoryCtx_t* ctx)
         if (!get_free_bytes(ctx, &free_bytes)) {
             return false;
         }
-        if (free_bytes >= SpaceRequiredForNewFile) {
+        if (free_bytes >= space_required_for_new_file) {
             return true;
         }
 
@@ -498,8 +506,10 @@ bool ensure_space_for_new_file(DirectoryCtx_t* ctx)
             return false;
         }
 
-        // Increased array size to 16 (was 13) to fit prefix like "0:/TLM0001.BIN"
-        //finds the lowest file and deletes it
+        /*
+         * Increased array size to 16 (was 13) to fit prefix like "0:/TLM0001.BIN"
+         * finds the lowest file and deletes it
+         */
         char filename[16] = {};
         make_telemetry_filename(ctx, lowest_index, filename, sizeof(filename));
         if (f_unlink(filename) != FR_OK) {
@@ -517,7 +527,7 @@ bool initialize_session(DirectoryCtx_t* ctx)
     bool loaded_valid = false;
 
     // Pass the directory path so SessionStore knows which file to load
-	if (!SessionStore_Load(ctx->directory_path, &loaded, &loaded_valid)) {
+	if (!session_store_load(ctx->directory_path, &loaded, &loaded_valid)) {
 		return false;
 	}
 
@@ -593,7 +603,7 @@ bool open_new_telemetry_file(DirectoryCtx_t* ctx)
 	if (!ensure_space_for_new_file(ctx)) {
 		return false;
 	}
-	if ((ctx->session.next_file_index == 0u) || (ctx->session.next_file_index > MaximumFileIndex)) {
+	if ((ctx->session.next_file_index == 0u) || (ctx->session.next_file_index > maximum_file_index)) {
 		return false;
 	}
 
@@ -616,7 +626,7 @@ bool open_new_telemetry_file(DirectoryCtx_t* ctx)
 	ctx->session.next_file_index = new_index + 1u;
 
 	// Save the metadata to this specific directory's SESSION.BIN
-	if (!SessionStore_Save(ctx->directory_path, &ctx->session)) {
+	if (!session_store_save(ctx->directory_path, &ctx->session)) {
 		(void)f_close(&ctx->active_file);
 		ctx->file_is_open = false;
 		ctx->current_file_index = 0u;
@@ -664,15 +674,17 @@ static void disconnect_directory(DirectoryCtx_t* ctx)
  * tries to mount the sd card
  * checks if there are two directories eps and payload
  * connects to them and save the connection in global verbs*/
-bool TelemetryFileStore_Connect(void)
+bool telemetry_file_store_connect(void)
 {
     // Mount the entire SD card once
     if (f_mount(&sd_filesystem, "", 1u) != FR_OK) {
         return false;
     }
 
-    // Create the directories
-    // FR_EXIST means "it's already there", which is OK
+    /*
+     * Create the directories
+     * FR_EXIST means "it's already there", which is OK
+     */
     FRESULT r_payload = f_mkdir("PAYLOAD");
     if (r_payload != FR_OK && r_payload != FR_EXIST) {
         return false;
@@ -694,9 +706,9 @@ bool TelemetryFileStore_Connect(void)
  * Tears down both directories completely (called on error).
  * Disconnect both connections and try to mount the sd card again
  */
-void TelemetryFileStore_Disconnect(void)
+void telemetry_file_store_disconnect(void)
 {
-    TelemetryFileStore_EndFetch();
+    telemetry_file_store_end_fetch();
 	disconnect_directory(&dir_payload);
 	disconnect_directory(&dir_eps);
 
@@ -718,7 +730,7 @@ struct RouteEntry_t {
  * To add new subsystem nodes in the future, simply add a new row here.
  * The routing logic itself is closed for modification.
  */
-static const RouteEntry_t RoutingTable[] = {
+static const RouteEntry_t routing_table[] = {
     { 0x02u, &dir_payload }, // PAYLOAD_NODE_ID
     { 0x03u, &dir_eps } // EPS_NODE_ID
 };
@@ -730,11 +742,11 @@ static DirectoryCtx_t* route_record(uint16_t node_sensor_id)
 {
     // Extract the Node ID (top 8 bits) from the sensor_id
     const uint8_t node_id = static_cast<uint8_t>(node_sensor_id >> 8u);
-    const size_t table_size = sizeof(RoutingTable) / sizeof(RoutingTable[0]);
+    const size_t table_size = sizeof(routing_table) / sizeof(routing_table[0]);
 
     for (size_t i = 0u; i < table_size; ++i) {
-        if (RoutingTable[i].node_id == node_id) {
-            return RoutingTable[i].target_directory;
+        if (routing_table[i].node_id == node_id) {
+            return routing_table[i].target_directory;
         }
     }
     // Unknown source, discard securely
@@ -752,7 +764,7 @@ extern UART_HandleTypeDef huart2;
  * Routes each record to its appropriate directory based on its source node.
  * Rotates files automatically when the 1 MiB limit is reached.
  */
-bool TelemetryFileStore_Write(const LogRecord_t* records, uint32_t record_count)
+bool telemetry_file_store_write(const LogRecord_t* records, uint32_t record_count)
 {
     // Safety checks: null pointer, empty batch, or batch too large
     if ((records == nullptr) || (record_count == 0u) || (record_count > LOG_RECORDS_PER_SECTOR)) {
@@ -790,18 +802,22 @@ bool TelemetryFileStore_Write(const LogRecord_t* records, uint32_t record_count)
             continue;
         }
 
-        // File size management (Rotation)
-        // Check if adding this 16-byte record will exceed the 1 MiB limit
-        if ((ctx->current_file_bytes + sizeof(LogRecord_t)) > TelemetryFileSizeBytes) {
+        /*
+         * File size management (Rotation)
+         * Check if adding this 16-byte record will exceed the 1 MiB limit
+         */
+        if ((ctx->current_file_bytes + sizeof(LogRecord_t)) > telemetry_file_size_bytes) {
             if (!open_new_telemetry_file(ctx)) {
                 overall_success = false;
                 continue; // Failed to rotate file, skip this record
             }
         }
 
-        // f_tell where are we in the file != end of the file
-        // f_lseek move curser to the end
-        // we try to write new records so we need to be at the end of the file
+        /*
+         * f_tell where are we in the file != end of the file
+         * f_lseek move cursor to the end
+         * we try to write new records so we need to be at the end of the file
+         */
         if ((f_tell(&ctx->active_file) != f_size(&ctx->active_file)) &&
                 (f_lseek(&ctx->active_file, f_size(&ctx->active_file)) != FR_OK)) {
             overall_success = false;
@@ -832,16 +848,18 @@ bool TelemetryFileStore_Write(const LogRecord_t* records, uint32_t record_count)
         }
     }
 
-    // Commit changes to physical SD Card
-    // Synchronize and save session metadata ONLY for touched directories.
-    // This minimizes blocking time and SD card wear.
+    /*
+     * Commit changes to physical SD Card
+     * Synchronize and save session metadata ONLY for touched directories.
+     * This minimizes blocking time and SD card wear.
+     */
     if (eps_written) {
         (void)f_sync(&dir_eps.active_file);
-        (void)SessionStore_Save(dir_eps.directory_path, &dir_eps.session);
+        (void)session_store_save(dir_eps.directory_path, &dir_eps.session);
     }
     if (payload_written) {
         (void)f_sync(&dir_payload.active_file);
-        (void)SessionStore_Save(dir_payload.directory_path, &dir_payload.session);
+        (void)session_store_save(dir_payload.directory_path, &dir_payload.session);
     }
 
     return overall_success;
@@ -851,7 +869,7 @@ bool TelemetryFileStore_Write(const LogRecord_t* records, uint32_t record_count)
  * connects to the correct directory ,
  * and updates global cursor values , so it initialize search .
  */
-bool TelemetryFileStore_BeginFetch(uint8_t volume, uint32_t from_epoch_s, uint32_t to_epoch_s)
+bool telemetry_file_store_begin_fetch(uint8_t volume, uint32_t from_epoch_s, uint32_t to_epoch_s)
 {
     if (fetch_cursor.active || (from_epoch_s > to_epoch_s) || (volume > 1u)) {
         return false;
@@ -913,7 +931,7 @@ bool TelemetryFileStore_BeginFetch(uint8_t volume, uint32_t from_epoch_s, uint32
  * checks if we finished the current file then move to the next file
  * and searches for the next valid record that is in epoch range
  * also the record that was found will be saved in record out side pointer */
-TelemetryReadResult_t TelemetryFileStore_ReadChunk(
+TelemetryReadResult_t telemetry_file_store_read_chunk(
         LogRecord_t* records, uint32_t capacity, uint32_t* record_count)
 {
     if (!fetch_cursor.active || (records == nullptr) || (record_count == nullptr)
@@ -1016,14 +1034,14 @@ TelemetryReadResult_t TelemetryFileStore_ReadChunk(
 
 /*
  * How many records did the binary search inspect/check before finding the starting position.*/
-uint16_t TelemetryFileStore_GetFetchProbeCount(void)
+uint16_t telemetry_file_store_get_fetch_probe_count(void)
 {
     return fetch_cursor.probe_count;
 }
 /*
  * reset cursor
  * */
-void TelemetryFileStore_EndFetch(void)
+void telemetry_file_store_end_fetch(void)
 {
     (void)close_fetch_reader();
     fetch_cursor = {};

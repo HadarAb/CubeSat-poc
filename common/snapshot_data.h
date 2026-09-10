@@ -8,7 +8,7 @@
  * Latest decoded telemetry for one node, held in RAM.
  *
  * The collector fills these fields from individual VTable key reads, and the
- * ground-station path reads them through PayloadCollector_GetSnapshot(). This
+ * ground-station path reads them through payload_collector_get_snapshot(). This
  * is not a wire format and is never written to the SD card.
  */
 

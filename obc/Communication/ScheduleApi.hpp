@@ -3,7 +3,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 
-/*Satellite power states*/
+// Satellite power states
 typedef enum
 {
     SAT_STATE_CRITICAL = 0,
@@ -35,17 +35,17 @@ typedef enum
 extern "C" {
 #endif
 
-/* Return the satellite's current power state. */
-SatState_t PowerState_Get(void);
+// Return the satellite's current power state.
+SatState_t power_state_get(void);
 
-/* Reset every schedule item to its initial state. */
-void Schedule_Init(void);
+// Reset every schedule item to its initial state.
+void schedule_init(void);
 
-/* Return true once when an item is due, then move its next-due time forward. */
-bool Schedule_TryTakeDue(ScheduleItemId_t item, SatState_t state, uint32_t now_ticks);
+// Return true once when an item is due, then move its next-due time forward.
+bool schedule_try_take_due(ScheduleItemId_t item, SatState_t state, uint32_t now_ticks);
 
-/* Return the period for an item and state. Zero means the item is disabled. */
-uint32_t Schedule_GetPeriodMs(ScheduleItemId_t item, SatState_t state);
+// Return the period for an item and state. Zero means the item is disabled.
+uint32_t schedule_get_period_ms(ScheduleItemId_t item, SatState_t state);
 
 #ifdef __cplusplus
 }

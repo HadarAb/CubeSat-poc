@@ -66,7 +66,7 @@ void power_state_update(uint8_t battery_pct, bool battery_valid)
 /*
  * Definition of the weak declaration in ScheduleApi.hpp.
  */
-extern "C" SatState_t PowerState_Get(void)
+extern "C" SatState_t power_state_get(void)
 {
     return s_state;
 }

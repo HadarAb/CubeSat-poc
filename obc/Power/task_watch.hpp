@@ -22,9 +22,11 @@ void task_watch_init(void);
 // Each supervised task calls this once per loop pass
 void task_watch_checkin(uint32_t task_bit);
 
-// Atomically test for a complete supervision window. When all tasks have
-// checked in, clear the accumulated bits and return true. When any task is
-// missing, keep the reported bits and return false.
+/*
+ * Atomically test for a complete supervision window. When all tasks have
+ * checked in, clear the accumulated bits and return true. When any task is
+ * missing, keep the reported bits and return false.
+ */
 bool task_watch_all_alive_and_clear(void);
 
 // Read-only bitmask, for reporting over UART

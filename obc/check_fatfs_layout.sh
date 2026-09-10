@@ -75,11 +75,11 @@ fi
 
 # --- 5. RTOS entry point ---------------------------------------------------
 # osKernelStart() never returns, so main()'s while(1) superloop is dead code.
-# ObcController_Process() must be driven from a task or the OBC transmits its boot
+# obc_controller_process() must be driven from a task or the OBC transmits its boot
 # banner and then never answers a ground-station command (GS times out at 2 s).
 # A regen that renames tasks can drop the USER CODE block holding this call.
-if ! grep -qE '^[[:space:]]*ObcController_Process[[:space:]]*\(' Core/Src/freertos.c 2>/dev/null; then
-  echo "FAIL: nothing calls ObcController_Process() in Core/Src/freertos.c."
+if ! grep -qE '^[[:space:]]*obc_controller_process[[:space:]]*\(' Core/Src/freertos.c 2>/dev/null; then
+  echo "FAIL: nothing calls obc_controller_process() in Core/Src/freertos.c."
   echo "      UART commands will silently stop working (TX still fine, RX unanswered)."
   rc=1
 fi

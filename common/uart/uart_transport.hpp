@@ -1,4 +1,4 @@
-/* Shared USART2 interrupt buffering, frame parsing, CRC checking, and transmission. */
+// Shared USART2 interrupt buffering, frame parsing, CRC checking, and transmission.
 #pragma once
 
 #include "../crc32.h"
@@ -14,7 +14,7 @@ class UartTransport
 public:
     /* init uart clears every thing , and makes ready to transmit interrupt work only
      * when there are actual bytes to send  */
-    void Init(void)
+    void init(void)
     {
         rx_head = 0u;
         rx_tail = 0u;
@@ -23,10 +23,12 @@ public:
         tx_tail = 0u;
         tx_overflow_count = 0u;
         crc_error_count = 0u;
-        ResetFrameParser();
+        reset_frame_parser();
 
-        // TXE is enabled only when bytes are waiting in the software TX queue.
-        // disable ready to send interrupt
+        /*
+         * TXE is enabled only when bytes are waiting in the software TX queue.
+         * disable ready to send interrupt
+         */
         CLEAR_BIT(USART2->CR1, USART_CR1_TXEIE);
         // clears all flags
         USART2->ICR = USART_ICR_ORECF | USART_ICR_FECF | USART_ICR_NCF;
@@ -42,7 +44,7 @@ public:
      * Drains queued bytes and returns 1 when one complete CRC-valid message
      * is available. Call repeatedly until it returns 0.
      */
-    uint8_t TryReceive(UartReceivedFrame_t* out)
+    uint8_t try_receive(UartReceivedFrame_t* out)
     {
         if (out == nullptr)
         {
@@ -52,9 +54,9 @@ public:
         while (rx_tail != rx_head)
         {
             const uint8_t byte = rx_queue[rx_tail];
-            rx_tail = static_cast<uint16_t>((rx_tail + 1u) % RxQueueSize);
+            rx_tail = static_cast<uint16_t>((rx_tail + 1u) % rx_queue_size);
 
-            if (ConsumeByte(byte, out) != 0u)
+            if (consume_byte(byte, out) != 0u)
             {
                 return 1u;
             }
@@ -64,8 +66,8 @@ public:
     }
 
 
-    /* Builds and queues one complete frame. Returns 0 if the TX queue has no room. */
-    uint8_t SendFrame(uint8_t msg_type, uint16_t sequence,
+    // Builds and queues one complete frame. Returns 0 if the TX queue has no room.
+    uint8_t send_frame(uint8_t msg_type, uint16_t sequence,
     				const void* payload, uint16_t payload_length)
     {
         if ((payload_length > UART_MAX_PAYLOAD_SIZE)
@@ -93,12 +95,12 @@ public:
         }
 
         const uint16_t crc_offset = UART_FRAME_HEADER_SIZE + payload_length;
-        const uint32_t crc = Protocol_Crc32(frame, crc_offset);
+        const uint32_t crc = protocol_crc32(frame, crc_offset);
         std::memcpy(&frame[crc_offset], &crc, sizeof(crc));
 
         // Copy the complete frame into the TX queue before this stack buffer disappears
         const uint16_t frame_size = static_cast<uint16_t>(crc_offset + UART_FRAME_CRC_SIZE);
-        return QueueBytes(frame, frame_size);
+        return queue_bytes(frame, frame_size);
     }
 
     /* This function is getting triggered every UART interrupt and handles
@@ -109,7 +111,7 @@ public:
      * If we got a byte on RX, the interrupt will trigger and this function
      * will read the byte and save it.
      */
-    void HandleInterrupt(void)
+    void handle_interrupt(void)
     {
     	//read uart status register (is uart ready , any errors , byte arrived)
         const uint32_t status = USART2->ISR;
@@ -120,13 +122,13 @@ public:
         	//clears the errors
             USART2->ICR = USART_ICR_ORECF | USART_ICR_FECF | USART_ICR_NCF;
         }
-        // did we recive a new byte
+        // did we receive a new byte
         if ((status & USART_ISR_RXNE) != 0u)
         {
         	//if ye read the byte
             const uint8_t byte = static_cast<uint8_t>(USART2->RDR);
             const uint16_t next_head =
-                static_cast<uint16_t>((rx_head + 1u) % RxQueueSize);
+                static_cast<uint16_t>((rx_head + 1u) % rx_queue_size);
 
             if (next_head != rx_tail)
             {
@@ -138,8 +140,10 @@ public:
                 ++rx_overflow_count;
             }
         }
-        // is uart ready to send anouther byte is TX interrupt enabled
-        // handles the sending part
+        /*
+         * is uart ready to send another byte is TX interrupt enabled
+         * handles the sending part
+         */
         if (((status & USART_ISR_TXE) != 0u)
             && ((USART2->CR1 & USART_CR1_TXEIE) != 0u))
         {
@@ -147,7 +151,7 @@ public:
             {
                 // Writing TDR clears TXE. Hardware interrupts again when it is ready.
                 USART2->TDR = tx_queue[tx_tail];
-                tx_tail = static_cast<uint16_t>((tx_tail + 1u) % TxQueueSize);
+                tx_tail = static_cast<uint16_t>((tx_tail + 1u) % tx_queue_size);
             }
 
             if (tx_tail == tx_head)
@@ -160,44 +164,44 @@ public:
 
 
 private:
-    static constexpr uint16_t RxQueueSize = 256u;
-    static constexpr uint16_t TxQueueSize = 2048u;
+    static constexpr uint16_t rx_queue_size = 256u;
+    static constexpr uint16_t tx_queue_size = 2048u;
 
-    /* Raw bytes received by the UART interrupt wait in this ring. */
-    volatile uint8_t rx_queue[RxQueueSize] = {};
-    /* The interrupt writes new RX bytes at rx_head. */
+    // Raw bytes received by the UART interrupt wait in this ring.
+    volatile uint8_t rx_queue[rx_queue_size] = {};
+    // The interrupt writes new RX bytes at rx_head.
     volatile uint16_t rx_head = 0u;
-    /* TryReceive reads pending RX bytes at rx_tail. */
+    // try_receive reads pending RX bytes at rx_tail.
     volatile uint16_t rx_tail = 0u;
     volatile uint32_t rx_overflow_count = 0u;
 
-    /* Complete frames wait here while USART2 sends one byte at a time. */
-    volatile uint8_t tx_queue[TxQueueSize] = {};
-    /* The task writes at tx_head; the UART interrupt reads at tx_tail. */
+    // Complete frames wait here while USART2 sends one byte at a time.
+    volatile uint8_t tx_queue[tx_queue_size] = {};
+    // The task writes at tx_head; the UART interrupt reads at tx_tail.
     volatile uint16_t tx_head = 0u;
     volatile uint16_t tx_tail = 0u;
     volatile uint32_t tx_overflow_count = 0u;
 
     uint32_t crc_error_count = 0u;
 
-    /* Parser storage for one frame being received. */
+    // Parser storage for one frame being received.
     uint8_t frame_buffer[UART_MAX_FRAME_SIZE] = {};
     uint16_t frame_count = 0u;
     uint16_t expected_frame_size = 0u;
 
 
-    /* Clears the partially collected UART frame. */
-    void ResetFrameParser(void)
+    // Clears the partially collected UART frame.
+    void reset_frame_parser(void)
     {
         frame_count = 0u;
         expected_frame_size = 0u;
     }
 
 
-    /* Resets the parser and treats byte as a possible first start byte. */
-    void BeginFrameWithByte(uint8_t byte)
+    // Resets the parser and treats byte as a possible first start byte.
+    void begin_frame_with_byte(uint8_t byte)
     {
-        ResetFrameParser();
+        reset_frame_parser();
 
         if (byte == static_cast<uint8_t>(UART_FRAME_START & 0xFFu))
         {
@@ -207,17 +211,17 @@ private:
     }
 
 
-    /* Restores the exact interrupt state that existed before a critical section. */
-    static void ExitCritical(uint32_t previous_primask)
+    // Restores the exact interrupt state that existed before a critical section.
+    static void exit_critical(uint32_t previous_primask)
     {
         __set_PRIMASK(previous_primask);
     }
 
 
-    /* Copies one whole frame to the TX ring and starts TXE interrupts. */
-    uint8_t QueueBytes(const uint8_t* bytes_arr, uint16_t size)
+    // Copies one whole frame to the TX ring and starts TXE interrupts.
+    uint8_t queue_bytes(const uint8_t* bytes_arr, uint16_t size)
     {
-        if ((bytes_arr == nullptr) || (size == 0u) || (size >= TxQueueSize))
+        if ((bytes_arr == nullptr) || (size == 0u) || (size >= tx_queue_size))
         {
             return 0u;
         }
@@ -234,16 +238,16 @@ private:
         }
         else
         {
-            used = static_cast<uint16_t>(TxQueueSize - (tx_tail - tx_head));
+            used = static_cast<uint16_t>(tx_queue_size - (tx_tail - tx_head));
         }
 
         // calculate free space
-        const uint16_t free_space = static_cast<uint16_t>(TxQueueSize - used - 1u);
+        const uint16_t free_space = static_cast<uint16_t>(tx_queue_size - used - 1u);
         //if we cant copy full frame we wont do it
         if (size > free_space)
         {
             ++tx_overflow_count;
-            ExitCritical(previous_primask);
+            exit_critical(previous_primask);
             return 0u;
         }
 
@@ -251,12 +255,12 @@ private:
         for (uint16_t index = 0u; index < size; ++index)
         {
             tx_queue[tx_head] = bytes_arr[index];
-            tx_head = static_cast<uint16_t>((tx_head + 1u) % TxQueueSize);
+            tx_head = static_cast<uint16_t>((tx_head + 1u) % tx_queue_size);
         }
 
         // enable interrupts again
         SET_BIT(USART2->CR1, USART_CR1_TXEIE);
-        ExitCritical(previous_primask);
+        exit_critical(previous_primask);
         return 1u;
     }
 
@@ -266,7 +270,7 @@ private:
      * ,read received CRC ,calculate CRC,compare them ,
      *  return the message type and sequence if valid
      */
-    uint8_t ConsumeByte(uint8_t byte, UartReceivedFrame_t* out)
+    uint8_t consume_byte(uint8_t byte, UartReceivedFrame_t* out)
     {
         // get first 8 and 16 bits to check is it a start of a msg
         const uint8_t start_low = static_cast<uint8_t>(UART_FRAME_START);
@@ -297,7 +301,7 @@ private:
             else
             {
                 // check if its the first part of the starting bit again
-                BeginFrameWithByte(byte);
+                begin_frame_with_byte(byte);
             }
 
             return 0u;
@@ -306,7 +310,7 @@ private:
         //if frame buffer is full resets and checks is it a new msg
         if (frame_count >= sizeof(frame_buffer))
         {
-            BeginFrameWithByte(byte);
+            begin_frame_with_byte(byte);
             return 0u;
         }
 
@@ -324,7 +328,7 @@ private:
             if ((header.start != UART_FRAME_START)
                 || (header.payload_length > UART_MAX_PAYLOAD_SIZE))
             {
-                BeginFrameWithByte(byte);
+                begin_frame_with_byte(byte);
                 return 0u;
             }
 
@@ -345,12 +349,12 @@ private:
                     sizeof(received_crc));
 
         const uint32_t calculated_crc =
-            Protocol_Crc32(frame_buffer, expected_frame_size - UART_FRAME_CRC_SIZE);
+            protocol_crc32(frame_buffer, expected_frame_size - UART_FRAME_CRC_SIZE);
 
         if (received_crc != calculated_crc)
         {
             ++crc_error_count;
-            ResetFrameParser();
+            reset_frame_parser();
             return 0u;
         }
 
@@ -366,7 +370,7 @@ private:
                         header.payload_length);
         }
 
-        ResetFrameParser();
+        reset_frame_parser();
         return 1u;
     }
 };

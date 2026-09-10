@@ -95,10 +95,10 @@ int main(void)
   MX_USART2_UART_Init();
 
   /* USER CODE BEGIN 2 */
-  VTable_Init();
-  PayloadUart_Init();
+  vtable_init();
+  payload_uart_init();
 
-  if (I2CSlave_Init(&hi2c1) != HAL_OK)
+  if (i2c_slave_init(&hi2c1) != HAL_OK)
   {
     Error_Handler();
   }
@@ -114,7 +114,7 @@ int main(void)
   /* USER CODE BEGIN WHILE */
   while (1)
   {
-    PayloadUart_Process();
+    payload_uart_process();
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */

@@ -1,4 +1,4 @@
-/* Shared Payload/EPS I2C VTable register protocol and HAL callbacks. */
+// Shared Payload/EPS I2C VTable register protocol and HAL callbacks.
 #include "i2c_slave.hpp"
 
 #include "crc16.h"
@@ -17,7 +17,7 @@ enum class ReceiveState : uint8_t
     Index
 };
 
-/* The storage is static: this module performs no heap allocation. */
+// The storage is static: this module performs no heap allocation.
 // context of i2c
 I2C_HandleTypeDef* slave_i2c = nullptr;
 uint8_t node_id = 0u;
@@ -42,8 +42,8 @@ VtValueWire_t transmit_value = {};
 VtEntryWire_t transmit_entry = {};
 
 
-/* prepare transmit buffer , check if entity exists in the vtable by name  */
-void PrepareValueResponse(void)
+// prepare transmit buffer , check if entity exists in the vtable by name
+void prepare_value_response(void)
 {
     //cleaning the buffer updating its type
     std::memset(&transmit_value, 0, sizeof(transmit_value));
@@ -52,7 +52,7 @@ void PrepareValueResponse(void)
     VtEntry_t entry = {};
 
     //check that we got a key and we can transmit
-    if (selected_key_valid && VTable_Get(selected_key, &entry))
+    if (selected_key_valid && vtable_get(selected_key, &entry))
     {
         transmit_value.type = entry.type;
         transmit_value.len = entry.len;
@@ -60,19 +60,19 @@ void PrepareValueResponse(void)
     }
 
     // len == 0 with a valid CRC means the selected key was not found.
-    transmit_value.crc16 = Protocol_Crc16(
+    transmit_value.crc16 = protocol_crc16(
         reinterpret_cast<const uint8_t*>(&transmit_value), VT_VALUE_CRC_SIZE);
 }
 
 
-/* prepare transmit buffer , check if entity exists in the vtable by index */
-void PrepareEntryResponse(void)
+// prepare transmit buffer , check if entity exists in the vtable by index
+void prepare_entry_response(void)
 {
     //clean buffer
     std::memset(&transmit_entry, 0, sizeof(transmit_entry));
 
     VtEntry_t entry = {};
-    if (selected_index_valid && VTable_At(selected_index, &entry))
+    if (selected_index_valid && vtable_at(selected_index, &entry))
     {
         std::memcpy(transmit_entry.name, entry.name, VT_NAME_LEN);
         transmit_entry.type = entry.type;
@@ -80,7 +80,7 @@ void PrepareEntryResponse(void)
         std::memcpy(transmit_entry.value, entry.value, VT_VALUE_LEN);
     }
 
-    transmit_entry.crc16 = Protocol_Crc16(
+    transmit_entry.crc16 = protocol_crc16(
         reinterpret_cast<const uint8_t*>(&transmit_entry), VT_ENTRY_CRC_SIZE);
 }
 
@@ -91,14 +91,14 @@ void PrepareEntryResponse(void)
  * bytes: buffer containing the data to send
  * size : number of bytes to send
  */
-void StartTransmit(I2C_HandleTypeDef* hi2c, uint8_t* bytes, uint16_t size)
+void start_transmit(I2C_HandleTypeDef* hi2c, uint8_t* bytes, uint16_t size)
 {
     (void)HAL_I2C_Slave_Seq_Transmit_IT(hi2c, bytes, size, I2C_LAST_FRAME);
 }
 }
 
 
-HAL_StatusTypeDef CommonI2CSlave_Init(I2C_HandleTypeDef* i2c_handle,
+HAL_StatusTypeDef common_i2c_slave_init(I2C_HandleTypeDef* i2c_handle,
                                       uint16_t own_address_hal,
                                       uint8_t logical_node_id)
 {
@@ -159,8 +159,10 @@ extern "C" void HAL_I2C_AddrCallback(I2C_HandleTypeDef* hi2c,
     //check is master transmiting to us
     if (transfer_direction == I2C_DIRECTION_TRANSMIT)
     {
-        //prepares the slave to receive one byte from the master
-        //the first byte is the command
+        /*
+         * prepares the slave to receive one byte from the master
+         * the first byte is the command
+         */
         receive_state = ReceiveState::Register;
         (void)HAL_I2C_Slave_Seq_Receive_IT(
             hi2c, &received_register, 1u, I2C_FIRST_FRAME);
@@ -174,33 +176,33 @@ extern "C" void HAL_I2C_AddrCallback(I2C_HandleTypeDef* hi2c,
         case REG_WHOAMI:
             transmit_node_id = node_id;
             // send back slave ID
-            StartTransmit(hi2c, &transmit_node_id, sizeof(transmit_node_id));
+            start_transmit(hi2c, &transmit_node_id, sizeof(transmit_node_id));
             break;
 
         case REG_VT_COUNT:
-            transmit_count = VTable_Count();
-            StartTransmit(hi2c,
+            transmit_count = vtable_count();
+            start_transmit(hi2c,
                           reinterpret_cast<uint8_t*>(&transmit_count),
                           sizeof(transmit_count));
             break;
 
         case REG_VT_VALUE:
-            PrepareValueResponse();
-            StartTransmit(hi2c,
+            prepare_value_response();
+            start_transmit(hi2c,
                           reinterpret_cast<uint8_t*>(&transmit_value),
                           VT_VALUE_WIRE_SIZE);
             break;
 
         case REG_VT_ENTRY:
-            PrepareEntryResponse();
-            StartTransmit(hi2c,
+            prepare_entry_response();
+            start_transmit(hi2c,
                           reinterpret_cast<uint8_t*>(&transmit_entry),
                           VT_ENTRY_WIRE_SIZE);
             break;
 
         default:
             // sends error
-            StartTransmit(hi2c, &transmit_error, sizeof(transmit_error));
+            start_transmit(hi2c, &transmit_error, sizeof(transmit_error));
             break;
     }
 }
@@ -230,7 +232,7 @@ extern "C" void HAL_I2C_SlaveRxCpltCallback(I2C_HandleTypeDef* hi2c)
             std::memset(selected_key, 0, sizeof(selected_key));
             receive_state = ReceiveState::Key;
 
-            //recive next bytes from i2c get exactly name bytes and put it in global verb
+            //receive next bytes from i2c get exactly name bytes and put it in global verb
             (void)HAL_I2C_Slave_Seq_Receive_IT(
                 hi2c,
                 reinterpret_cast<uint8_t*>(selected_key),

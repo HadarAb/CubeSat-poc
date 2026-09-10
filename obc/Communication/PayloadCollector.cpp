@@ -6,8 +6,8 @@
 #include "../../common/i2c/bus_config.h" // PAYLOAD_I2C_ADDRESS_HAL
 #include "../../common/crc32.h" // CRC functions
 #include "cmsis_os2.h" // osKernel, osDelay, osMutex
-#include "../../common/vtable/vtable.h" // VTable_HashName
-#include "../Core/Inc/rtc.h" // RTC_get_epoch(), RTC_get_boot_count()
+#include "../../common/vtable/vtable.h" // vtable_hash_name
+#include "../Core/Inc/rtc.h" // rtc_get_epoch(), rtc_get_boot_count()
 #include "../Power/task_watch.hpp"
 
 #include <string.h> // memset
@@ -23,9 +23,9 @@ static const uint32_t LEGACY_COLLECT_PERIOD_MS = 500u;
  * behavior until the real state and schedule implementation is merged.
  */
 #if defined(__GNUC__)
-extern "C" SatState_t PowerState_Get(void) __attribute__((weak));
-extern "C" void Schedule_Init(void) __attribute__((weak));
-extern "C" bool Schedule_TryTakeDue(ScheduleItemId_t item, SatState_t state, uint32_t now_ticks) __attribute__((weak));
+extern "C" SatState_t power_state_get(void) __attribute__((weak));
+extern "C" void schedule_init(void) __attribute__((weak));
+extern "C" bool schedule_try_take_due(ScheduleItemId_t item, SatState_t state, uint32_t now_ticks) __attribute__((weak));
 #endif
 
 extern osMessageQueueId_t q_telemetryHandle; // from freertos.c the queue
@@ -41,8 +41,10 @@ struct NodeState {
     uint8_t consecutive_errors; // tracks successive failures to avoid false offline alerts
 };
 
-//the devices that the OBC knows exist (EPS and PAYLOAD )
-//arr of there status
+/*
+ * the devices that the OBC knows exist (EPS and PAYLOAD )
+ * arr of their status
+ */
 static NodeState s_nodes[] = {
     {PAYLOAD_I2C_ADDRESS_HAL, PAYLOAD_NODE_ID, false, 0, 0, 0},
     {EPS_I2C_ADDRESS_HAL, EPS_NODE_ID, false, 0, 0, 0},
@@ -72,16 +74,18 @@ static uint8_t index_of(uint8_t node_id)
 }
 
 // Initializes the Mutex. called in freertos.c before the scheduler starts
-void PayloadCollector_Init(void)
+void payload_collector_init(void)
 {
 	// Create mutex with Priority Inheritance to prevent Priority Inversion
 	static const osMutexAttr_t attr = { "snapshot_mtx", osMutexPrioInherit, NULL, 0U };
 	s_snapshot_mtx = osMutexNew(&attr);
 }
 
-// thread safe function for GroundComm to read the latest data
-// snapshot will be filled with data , threw this function you grab it into out
-bool PayloadCollector_GetSnapshot(uint8_t node_id, Snapshot *out)
+/*
+ * thread safe function for GroundComm to read the latest data
+ * snapshot will be filled with data , through this function you grab it into out
+ */
+bool payload_collector_get_snapshot(uint8_t node_id, Snapshot *out)
 {
 	// Wait max 10 ticks for the mutex
 	if (osMutexAcquire(s_snapshot_mtx, 10U) != osOK) {
@@ -94,8 +98,8 @@ bool PayloadCollector_GetSnapshot(uint8_t node_id, Snapshot *out)
 	return out->valid;
 }
 
-/* safe/mutex gatter for status of all payloads  */
-bool PayloadCollector_GetStatus(PayloadCollectorStatus_t* out)
+// safe/mutex gatter for status of all payloads
+bool payload_collector_get_status(PayloadCollectorStatus_t* out)
 {
     if ((out == nullptr) || (osMutexAcquire(s_snapshot_mtx, 10u) != osOK))
     {
@@ -107,8 +111,8 @@ bool PayloadCollector_GetStatus(PayloadCollectorStatus_t* out)
     return out->valid;
 }
 
-/* Publishes one coherent copy of the latest collector and node health. */
-static void PublishCollectorStatus()
+// Publishes one coherent copy of the latest collector and node health.
+static void publish_collector_status()
 {
     if (osMutexAcquire(s_snapshot_mtx, 10u) != osOK)
     {
@@ -175,21 +179,21 @@ static const ScheduledSensor SENSORS[] = {
     {SCHEDULE_ITEM_EPS_SP0_CURRENT, EPS_NODE_ID, "SP0_I", VT_TYPE_F32, SnapshotField::StoredOnly},
 };
 
-static float DecodeF32(const VtValueWire_t& wire)
+static float decode_f32(const VtValueWire_t& wire)
 {
     float value = 0.0f;
     memcpy(&value, wire.value, sizeof(value));
     return value;
 }
 
-static uint32_t DecodeU32(const VtValueWire_t& wire)
+static uint32_t decode_u32(const VtValueWire_t& wire)
 {
     uint32_t value = 0u;
     memcpy(&value, wire.value, sizeof(value));
     return value;
 }
 
-static int16_t ToTenths(float value)
+static int16_t to_tenths(float value)
 {
     float scaled = value * 10.0f;
     if (!(scaled == scaled)) {
@@ -205,7 +209,7 @@ static int16_t ToTenths(float value)
     return static_cast<int16_t>(scaled);
 }
 
-static uint16_t ToU16(float value)
+static uint16_t to_u16(float value)
 {
     if (!(value == value) || (value <= 0.0f)) {
         return 0u;
@@ -216,69 +220,69 @@ static uint16_t ToU16(float value)
     return static_cast<uint16_t>(value + 0.5f);
 }
 
-/* Temporary compatibility mapping for the unchanged GS battery-percent field. */
-static uint8_t BatteryVoltageToPercent(float voltage)
+// Temporary compatibility mapping for the unchanged GS battery-percent field.
+static uint8_t battery_voltage_to_percent(float voltage)
 {
-    constexpr float EmptyVoltage = 3.30f;
-    constexpr float FullVoltage = 4.20f;
+    constexpr float empty_voltage = 3.30f;
+    constexpr float full_voltage = 4.20f;
 
-    if (!(voltage == voltage) || (voltage <= EmptyVoltage)) {
+    if (!(voltage == voltage) || (voltage <= empty_voltage)) {
         return 0u;
     }
-    if (voltage >= FullVoltage) {
+    if (voltage >= full_voltage) {
         return 100u;
     }
     return static_cast<uint8_t>(
-        (((voltage - EmptyVoltage) * 100.0f) / (FullVoltage - EmptyVoltage)) + 0.5f);
+        (((voltage - empty_voltage) * 100.0f) / (full_voltage - empty_voltage)) + 0.5f);
 }
 
 /* saves data inside the snapshot
  * spec what value it is and where to save it
  * wire the value it self in numbers
  * snapshot is the cashed space where we will save the data  */
-static void ApplyToSnapshot(const ScheduledSensor& sensor, const VtValueWire_t& wire, SnapshotData_t* snapshot)
+static void apply_to_snapshot(const ScheduledSensor& sensor, const VtValueWire_t& wire, SnapshotData_t* snapshot)
 {
     switch (sensor.snapshot_field) {
         case SnapshotField::Temperature:
-            snapshot->temperature_c_x10 = ToTenths(DecodeF32(wire));
+            snapshot->temperature_c_x10 = to_tenths(decode_f32(wire));
             break;
 
         case SnapshotField::TotalDose:
-            /* Compatibility only: the unchanged GS labels this field radiation_cps. */
-            snapshot->radiation_cps = ToU16(DecodeF32(wire));
+            // Compatibility only: the unchanged GS labels this field radiation_cps.
+            snapshot->radiation_cps = to_u16(decode_f32(wire));
             break;
 
         case SnapshotField::SelCount:
-            if (DecodeU32(wire) != 0u) {
+            if (decode_u32(wire) != 0u) {
                 snapshot->flags |= PAYLOAD_FLAG_SEU_INJECTED;
             }
             break;
 
         case SnapshotField::BatteryVoltage:
-            snapshot->battery_pct = BatteryVoltageToPercent(DecodeF32(wire));
+            snapshot->battery_pct = battery_voltage_to_percent(decode_f32(wire));
             break;
 
         case SnapshotField::ResetCount:
         case SnapshotField::StoredOnly:
-            /* These values are preserved in LogRecord_t but have no old GS field. */
+            // These values are preserved in LogRecord_t but have no old GS field.
             break;
     }
 }
 
-/* grabing data from node into a record to later store it on the sd */
-static void QueueValue(const ScheduledSensor& sensor, const VtValueWire_t& wire)
+// grabing data from node into a record to later store it on the sd
+static void queue_value(const ScheduledSensor& sensor, const VtValueWire_t& wire)
 {
     LogRecord_t record = {};
-    record.epoch_s = RTC_get_epoch();
+    record.epoch_s = rtc_get_epoch();
 
     const uint16_t node_part = static_cast<uint16_t>(static_cast<uint16_t>(sensor.node_id) << 8u);
-    const uint16_t key_part = static_cast<uint16_t>(VTable_HashName(sensor.key) & 0x00FFu);
+    const uint16_t key_part = static_cast<uint16_t>(vtable_hash_name(sensor.key) & 0x00FFu);
 
     record.sensor_id = static_cast<uint16_t>(node_part | key_part);
     record.type = LOG_RECORD_TYPE_TELEMETRY;
     record.len = wire.len;
     memcpy(record.value, wire.value, wire.len);
-    record.crc32 = Protocol_Crc32(reinterpret_cast<const uint8_t*>(&record),
+    record.crc32 = protocol_crc32(reinterpret_cast<const uint8_t*>(&record),
     									LOG_RECORD_CRC_SIZE);
 
     if ((q_telemetryHandle == nullptr)
@@ -287,8 +291,8 @@ static void QueueValue(const ScheduledSensor& sensor, const VtValueWire_t& wire)
     }
 }
 
-/* Return the runtime state object for one logical node. */
-static NodeState* FindNode(uint8_t node_id)
+// Return the runtime state object for one logical node.
+static NodeState* find_node(uint8_t node_id)
 {
     for (NodeState& node : s_nodes)
     {
@@ -301,15 +305,15 @@ static NodeState* FindNode(uint8_t node_id)
     return nullptr;
 }
 
-/* Record a successful reply from a node, even when its value is unusable. */
-static void MarkNodeResponded(NodeState& node)
+// Record a successful reply from a node, even when its value is unusable.
+static void mark_node_responded(NodeState& node)
 {
     node.consecutive_errors = 0u;
     node.online = true;
 }
 
-/* Mark a node offline only after three consecutive bus-level failures. */
-static void MarkNodeBusError(NodeState& node)
+// Mark a node offline only after three consecutive bus-level failures.
+static void mark_node_bus_error(NodeState& node)
 {
     ++node.err_count;
     ++node.consecutive_errors;
@@ -324,7 +328,7 @@ static void MarkNodeBusError(NodeState& node)
  * Update only the newly read field in the existing snapshot. Other sensor
  * values stay untouched, so sensors with different periods accumulate safely.
  */
-static void UpdateSnapshot(const ScheduledSensor& sensor,
+static void update_snapshot(const ScheduledSensor& sensor,
 							const VtValueWire_t& wire, uint32_t now_ticks)
 {
     if ((sensor.snapshot_field == SnapshotField::ResetCount)
@@ -348,7 +352,7 @@ static void UpdateSnapshot(const ScheduledSensor& sensor,
         snapshot.data.node_id = sensor.node_id;
     }
 
-    ApplyToSnapshot(sensor, wire, &snapshot.data);
+    apply_to_snapshot(sensor, wire, &snapshot.data);
 
     if (sensor.snapshot_field == SnapshotField::BatteryVoltage)
     {
@@ -356,7 +360,7 @@ static void UpdateSnapshot(const ScheduledSensor& sensor,
     }
 
     snapshot.data.timestamp_ms = now_ticks;
-    snapshot.data.crc32 = Protocol_Crc32(reinterpret_cast<const uint8_t*>(&snapshot.data),
+    snapshot.data.crc32 = protocol_crc32(reinterpret_cast<const uint8_t*>(&snapshot.data),
     									 SNAPSHOT_DATA_CRC_SIZE);
     snapshot.obc_time_ms = now_ticks;
     snapshot.valid = true;
@@ -364,10 +368,10 @@ static void UpdateSnapshot(const ScheduledSensor& sensor,
     osMutexRelease(s_snapshot_mtx);
 }
 
-/* Read one due sensor, queue its record, and update its existing snapshot field. */
-static void ReadScheduledSensor(const ScheduledSensor& sensor)
+// Read one due sensor, queue its record, and update its existing snapshot field.
+static void read_scheduled_sensor(const ScheduledSensor& sensor)
 {
-    NodeState* node = FindNode(sensor.node_id);
+    NodeState* node = find_node(sensor.node_id);
 
     if (node == nullptr)
     {
@@ -382,17 +386,17 @@ static void ReadScheduledSensor(const ScheduledSensor& sensor)
 
     VtValueWire_t wire = {};
     const I2CKeyReadResult_t result =
-    		I2CMaster_ReadKey(node->addr, sensor.key, sensor.expected_type, &wire);
+    		i2c_master_read_key(node->addr, sensor.key, sensor.expected_type, &wire);
     osMutexRelease(i2c_mtxHandle);
 
     if (result == I2C_KEY_READ_BUS_ERROR)
     {
-        MarkNodeBusError(*node);
+        mark_node_bus_error(*node);
         return;
     }
 
     // CRC, format, and missing key replies still prove that the node answered.
-    MarkNodeResponded(*node);
+    mark_node_responded(*node);
 
     if (result == I2C_KEY_READ_CRC_ERROR)
     {
@@ -412,22 +416,22 @@ static void ReadScheduledSensor(const ScheduledSensor& sensor)
     }
 
     // Storage failure never blocks the live snapshot update.
-    QueueValue(sensor, wire);
-    UpdateSnapshot(sensor, wire, osKernelGetTickCount());
+    queue_value(sensor, wire);
+    update_snapshot(sensor, wire, osKernelGetTickCount());
 }
 
-/* Return true only when Dev 1's complete schedule API is linked. */
-static bool SensorScheduleIsAvailable()
+// Return true only when Dev 1's complete schedule API is linked.
+static bool sensor_schedule_is_available()
 {
 #if defined(__GNUC__)
-    return (PowerState_Get != nullptr) && (Schedule_Init != nullptr) && (Schedule_TryTakeDue != nullptr);
+    return (power_state_get != nullptr) && (schedule_init != nullptr) && (schedule_try_take_due != nullptr);
 #else
     return true;
 #endif
 }
 
-/* Tick-wrap-safe deadline comparison used only by the legacy fallback. */
-static bool DeadlineReached(uint32_t now, uint32_t deadline)
+// Tick-wrap-safe deadline comparison used only by the legacy fallback.
+static bool deadline_reached(uint32_t now, uint32_t deadline)
 {
     return static_cast<int32_t>(now - deadline) >= 0;
 }
@@ -448,11 +452,11 @@ void payload_collector_run()
 	for (;;)
 	{
 		next_check_ticks += check_period_ticks;
-		const bool schedule_available = SensorScheduleIsAvailable();
+		const bool schedule_available = sensor_schedule_is_available();
 		const uint32_t now_ms = HAL_GetTick();
 		bool legacy_cycle_due = false;
 
-		if (!schedule_available && DeadlineReached(now_ms, legacy_due_ms))
+		if (!schedule_available && deadline_reached(now_ms, legacy_due_ms))
 		{
 			// Preserve the working 500 ms polling until Dev 1's module is merged.
 			legacy_cycle_due = true;
@@ -466,7 +470,7 @@ void payload_collector_run()
 
 			if (schedule_available)
 			{
-				state = PowerState_Get();
+				state = power_state_get();
 				state_valid = static_cast<uint32_t>(state)
 								< static_cast<uint32_t>(SAT_STATE_COUNT);
 			}
@@ -476,12 +480,12 @@ void payload_collector_run()
 				for (const ScheduledSensor& sensor : SENSORS)
 				{
 					if (schedule_available &&
-							!Schedule_TryTakeDue(sensor.schedule_item, state, now_ms))
+							!schedule_try_take_due(sensor.schedule_item, state, now_ms))
 					{
 						continue;
 					}
 
-					ReadScheduledSensor(sensor);
+					read_scheduled_sensor(sensor);
 				}
 			}
 		}
@@ -493,7 +497,7 @@ void payload_collector_run()
 			next_check_ticks = loop_end_ticks;
 		}
 
-		PublishCollectorStatus();
+		publish_collector_status();
 		// Report only after scheduling, sensor reads, and status publication finish.
 		task_watch_checkin(TASK_WATCH_COLLECTOR);
 		osDelayUntil(next_check_ticks);

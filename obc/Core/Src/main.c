@@ -108,12 +108,12 @@ int main(void)
   /* USER CODE BEGIN 2 */
 
   // Save the latest reset cause in DR3 and increment the persistent DR1 boot counter.
-  RTC_record_boot(reset_flags_snapshot);
+  rtc_record_boot(reset_flags_snapshot);
 
   // Clear only the hardware flags. DR3 keeps the saved cause for this boot.
   __HAL_RCC_CLEAR_RESET_FLAGS();
   //obc use i2c
-  ObcController_Init(&hi2c1);
+  obc_controller_init(&hi2c1);
 
   /* USER CODE END 2 */
 
@@ -130,7 +130,7 @@ int main(void)
   /* USER CODE BEGIN WHILE */
   while (1)
   {
-    ObcController_Process();
+    obc_controller_process();
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */

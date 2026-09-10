@@ -9,7 +9,7 @@ extern "C"
 {
 #endif
 
-/* Record types written to the telemetry files. */
+// Record types written to the telemetry files.
 #define LOG_RECORD_TYPE_TELEMETRY 0u
 #define LOG_RECORD_TYPE_BOOT 1u
 #define LOG_RECORD_TYPE_EVENT 2u
@@ -18,7 +18,7 @@ extern "C"
 #define LOG_RECORDS_PER_SECTOR 32u
 #define LOG_SECTOR_SIZE_BYTES 512u
 
-/* Reserved OBC housekeeping IDs. Their high byte routes them to the EPS directory. */
+// Reserved OBC housekeeping IDs. Their high byte routes them to the EPS directory.
 #define SENSOR_ID_RESET_CAUSE 0x03FEu
 #define SENSOR_ID_BOOT 0x03FFu
 
@@ -30,12 +30,12 @@ extern "C"
 	 */
 	typedef struct __attribute__((packed))
 	{
-		uint32_t epoch_s;      /* 4 bytes: Unix epoch time from RTC */
-        uint16_t sensor_id;    /* 2 bytes: Identifier of the sensor/data source */
-        uint8_t  type;         /* 1 byte: Telemetry, boot, event, or survival */
-        uint8_t  len;          /* 1 byte: Length of valid data in the value field */
-        uint8_t  value[4];     /* 4 bytes: The actual telemetry data */
-        uint32_t crc32;        /* 4 bytes: CRC32 of the first 12 bytes of this record */
+		uint32_t epoch_s;      // 4 bytes: Unix epoch time from RTC
+        uint16_t sensor_id;    // 2 bytes: Identifier of the sensor/data source
+        uint8_t  type;         // 1 byte: Telemetry, boot, event, or survival
+        uint8_t  len;          // 1 byte: Length of valid data in the value field
+        uint8_t  value[4];     // 4 bytes: The actual telemetry data
+        uint32_t crc32;        // 4 bytes: CRC32 of the first 12 bytes of this record
 	} LogRecord_t;
 
 #define LOG_RECORD_CRC_SIZE ((uint32_t)offsetof(LogRecord_t, crc32))

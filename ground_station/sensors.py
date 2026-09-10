@@ -33,7 +33,7 @@ for _panel in range(6):
 
 
 def vtable_hash_name(name: str) -> int:
-    """Mirror of VTable_HashName in common/vtable/vtable.c."""
+    """Mirror of vtable_hash_name in common/vtable/vtable.c."""
     padded = name.encode("ascii")[:VT_NAME_LEN].ljust(VT_NAME_LEN, b"\x00")
 
     hash_value = 2166136261

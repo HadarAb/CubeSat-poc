@@ -39,21 +39,25 @@ typedef enum
 #define VT_FLAG_IN_USE  0x0001u  // if on means this entity is in use
 #define VT_FLAG_FRESH   0x0002u  // if on then data is fresh and OBC still didnt got it
 
-// this format is only how it is saved inside the ram
-// wire format is how u send it threw i2c is below
+/*
+ * this format is only how it is saved inside the ram
+ * wire format is how u send it through i2c is below
+ */
 typedef struct __attribute__((packed))
 {
-    char name[VT_NAME_LEN];      /* NUL-padded, not NUL-terminated */
+    char name[VT_NAME_LEN];      // NUL-padded, not NUL-terminated
     uint8_t type;
-    uint8_t len;                 /* 1..VT_VALUE_LEN valid bytes in value */
+    uint8_t len;                 // 1..VT_VALUE_LEN valid bytes in value
     uint16_t flags;
     uint8_t value[VT_VALUE_LEN];
     uint32_t updated_ms;         // last time this field was updated
 } VtEntry_t;
 
 
-//i2c frame when you know the entity name and just need the value
-// len == 0 means the selected key does not exist
+/*
+ * i2c frame when you know the entity name and just need the value
+ * len == 0 means the selected key does not exist
+ */
 typedef struct __attribute__((packed))
 {
     uint8_t type;
@@ -77,31 +81,31 @@ typedef struct __attribute__((packed))
 #define VT_VALUE_CRC_SIZE ((uint32_t)offsetof(VtValueWire_t, crc16))
 #define VT_ENTRY_CRC_SIZE ((uint32_t)offsetof(VtEntryWire_t, crc16))
 
-/* Clears the table. Call once before the scheduler starts. */
-void VTable_Init(void);
+// Clears the table. Call once before the scheduler starts.
+void vtable_init(void);
 
 /*
  * Creates or updates one entry. updated_ms is supplied by the caller so this
  * module stays independent of HAL_GetTick() and remains PC-testable pure C.
  * Returns false for invalid input or when the table is full.
  */
-bool VTable_Set(const char* name, VtType_t type, const void* value, uint8_t len,
+bool vtable_set(const char* name, VtType_t type, const void* value, uint8_t len,
                 uint32_t updated_ms);
 
 /*
  * Copies one entry out by key and clears VT_FLAG_FRESH in the stored entry.
  * Returns false when the key is unknown.
  */
-bool VTable_Get(const char* name, VtEntry_t* out);
+bool vtable_get(const char* name, VtEntry_t* out);
 
-/* Number of live entries, and the exclusive upper bound for VTable_At. */
-uint16_t VTable_Count(void);
+// Number of live entries, and the exclusive upper bound for vtable_at.
+uint16_t vtable_count(void);
 
-/* Copies the entry at a dense index in [0, VTable_Count()). Used for discovery. */
-bool VTable_At(uint16_t index, VtEntry_t* out);
+// Copies the entry at a dense index in [0, vtable_count()). Used for discovery.
+bool vtable_at(uint16_t index, VtEntry_t* out);
 
-// input a name return an ID using FNV-1a, it is usefull to store the ID on the SD
-uint16_t VTable_HashName(const char* name);
+// input a name return an ID using FNV-1a, it is useful to store the ID on the SD
+uint16_t vtable_hash_name(const char* name);
 
 #ifdef __cplusplus
 }

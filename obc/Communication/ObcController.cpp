@@ -1,4 +1,4 @@
-/* Coordinates UART commands, periodic I2C polling, and cached OBC telemetry. */
+// Coordinates UART commands, periodic I2C polling, and cached OBC telemetry.
 
 
 #include "ObcController.hpp"
@@ -22,23 +22,23 @@
  * disabled until the real functions are linked into the OBC firmware.
  */
 #if defined(__GNUC__)
-extern "C" SatState_t PowerState_Get(void) __attribute__((weak));
-extern "C" void Schedule_Init(void) __attribute__((weak));
-extern "C" bool Schedule_TryTakeDue(ScheduleItemId_t item, SatState_t state, uint32_t now_ticks) __attribute__((weak));
+extern "C" SatState_t power_state_get(void) __attribute__((weak));
+extern "C" void schedule_init(void) __attribute__((weak));
+extern "C" bool schedule_try_take_due(ScheduleItemId_t item, SatState_t state, uint32_t now_ticks) __attribute__((weak));
 #endif
 
 namespace {
 uint16_t automatic_status_sequence = 0u;
 
 /* Builds the fixed UART payload from one node's latest thread safe snapshot. */
-UartPayload_t BuildPayload(uint8_t node_id)
+UartPayload_t build_payload(uint8_t node_id)
 {
 	UartPayload_t payload = {};
 	payload.node_id = node_id;
 	Snapshot snap;
 
 	// Fetch the latest telemetry snapshot safely
-	bool is_valid = PayloadCollector_GetSnapshot(node_id, &snap);
+	bool is_valid = payload_collector_get_snapshot(node_id, &snap);
 
 	if (is_valid) {
 		// Populate payload with valid telemetry data
@@ -64,36 +64,36 @@ UartPayload_t BuildPayload(uint8_t node_id)
 	return payload;
 }
 
-/*send error frame */
-void SendError(uint16_t sequence, uint8_t status)
+// send error frame
+void send_error(uint16_t sequence, uint8_t status)
 {
     UartPayload_t payload = {};
     payload.status = status;
 
-    UartProtocol_SendFrame(UART_MSG_ERROR, sequence, &payload, sizeof(payload));
+    uart_protocol_send_frame(UART_MSG_ERROR, sequence, &payload, sizeof(payload));
 }
 
 /* Return true only when Dev 1's state and schedule functions are linked. */
-bool ScheduleApiIsAvailable()
+bool schedule_api_is_available()
 {
 #if defined(__GNUC__)
-    return (PowerState_Get != nullptr) && (Schedule_Init != nullptr) && (Schedule_TryTakeDue != nullptr);
+    return (power_state_get != nullptr) && (schedule_init != nullptr) && (schedule_try_take_due != nullptr);
 #else
     return true;
 #endif
 }
 
 /* Read the power state when Dev 1's power module is available. */
-uint8_t GetPowerStateOrUnknown()
+uint8_t get_power_state_or_unknown()
 {
 #if defined(__GNUC__)
-    if (PowerState_Get == nullptr)
+    if (power_state_get == nullptr)
     {
         return 0xFFu;
     }
 #endif
 
-    const SatState_t state = PowerState_Get();
+    const SatState_t state = power_state_get();
 
     if (static_cast<uint32_t>(state) >= static_cast<uint32_t>(SAT_STATE_COUNT))
     {
@@ -107,21 +107,21 @@ uint8_t GetPowerStateOrUnknown()
  * Build OBC health from cached task data. GroundComm never accesses I2C or
  * FatFs directly; it only calls the read only status getters.
  */
-UartStatusPayload_t BuildStatusPayload(uint8_t power_state)
+UartStatusPayload_t build_status_payload(uint8_t power_state)
 {
     UartStatusPayload_t status = {};
     status.status = UART_STATUS_OK;
     status.power_state = power_state;
-    status.sd_state = static_cast<uint8_t>(SdLogger_GetState());
-    status.sd_error_count = SdLogger_GetErrorCount();
+    status.sd_state = static_cast<uint8_t>(sd_logger_get_state());
+    status.sd_error_count = sd_logger_get_error_count();
 
     Snapshot battery_snapshot = {};
-    bool battery_valid = PayloadCollector_GetSnapshot(EPS_NODE_ID, &battery_snapshot) && battery_snapshot.battery_valid;
+    bool battery_valid = payload_collector_get_snapshot(EPS_NODE_ID, &battery_snapshot) && battery_snapshot.battery_valid;
 
     if (!battery_valid)
     {
         // Payload is the PDF's fallback battery source when EPS has no sample.
-        battery_valid = PayloadCollector_GetSnapshot(PAYLOAD_NODE_ID, &battery_snapshot) && battery_snapshot.battery_valid;
+        battery_valid = payload_collector_get_snapshot(PAYLOAD_NODE_ID, &battery_snapshot) && battery_snapshot.battery_valid;
     }
 
     if (battery_valid)
@@ -135,7 +135,7 @@ UartStatusPayload_t BuildStatusPayload(uint8_t power_state)
     }
 
     PayloadCollectorStatus_t collector = {};
-    if (PayloadCollector_GetStatus(&collector))
+    if (payload_collector_get_status(&collector))
     {
         status.payload_online = collector.payload_online ? 1u : 0u;
         status.eps_online = collector.eps_online ? 1u : 0u;
@@ -149,7 +149,7 @@ UartStatusPayload_t BuildStatusPayload(uint8_t power_state)
 
     // Inject the task-watch bitmask into status flags for ground visibility.
     status.flags |= static_cast<uint8_t>(task_watch_get_mask() & 0x0Fu);
-    if (RTC_time_is_valid() != 0u) {
+    if (rtc_time_is_valid() != 0u) {
         status.flags |= OBC_FLAG_TIME_VALID;
     }
 
@@ -157,20 +157,20 @@ UartStatusPayload_t BuildStatusPayload(uint8_t power_state)
 }
 
 /* Send the same system status structure for requested and automatic reports. */
-void SendStatusResponse(uint8_t message_type, uint16_t sequence, uint8_t power_state)
+void send_status_response(uint8_t message_type, uint16_t sequence, uint8_t power_state)
 {
-    const UartStatusPayload_t status = BuildStatusPayload(power_state);
-    UartProtocol_SendFrame(message_type, sequence, &status, sizeof(status));
+    const UartStatusPayload_t status = build_status_payload(power_state);
+    uart_protocol_send_frame(message_type, sequence, &status, sizeof(status));
 }
 
 /*
  * Send one automatic OBC status report. Sensor measurements are sent only by
  * UART_MSG_PAYLOAD and are not part of this message.
  */
-void SendAutomaticStatus(SatState_t state)
+void send_automatic_status(SatState_t state)
 {
     automatic_status_sequence++;
-    SendStatusResponse(UART_MSG_AUTO_STATUS,
+    send_status_response(UART_MSG_AUTO_STATUS,
     		automatic_status_sequence, static_cast<uint8_t>(state));
 }
 
@@ -178,14 +178,14 @@ void SendAutomaticStatus(SatState_t state)
  * Ask the shared schedule if automatic status is due in the current state.
  * The schedule owns the timing policy; this function only performs the send.
  */
-void ProcessAutomaticStatus()
+void process_automatic_status()
 {
-    if (!ScheduleApiIsAvailable())
+    if (!schedule_api_is_available())
     {
         return;
     }
 
-    const SatState_t state = PowerState_Get();
+    const SatState_t state = power_state_get();
 
     if (static_cast<uint32_t>(state) >= static_cast<uint32_t>(SAT_STATE_COUNT))
     {
@@ -196,9 +196,9 @@ void ProcessAutomaticStatus()
     // HAL_GetTick() is the millisecond clock used by the schedule API.
     const uint32_t now_ticks = HAL_GetTick();
 
-    if (Schedule_TryTakeDue(SCHEDULE_ITEM_AUTO_STATUS, state, now_ticks))
+    if (schedule_try_take_due(SCHEDULE_ITEM_AUTO_STATUS, state, now_ticks))
     {
-        SendAutomaticStatus(state);
+        send_automatic_status(state);
     }
 }
 
@@ -207,52 +207,52 @@ void ProcessAutomaticStatus()
  * them from req.payload and must check req.payload_length themselves, replying
  * UART_STATUS_BAD_REQUEST when it does not match what the command expects.
  */
-void HandleRequest(const UartRequest_t& req)
+void handle_request(const UartRequest_t& req)
 {
     switch (req.msg_type)
     {
         case UART_MSG_STATUS:
         {
-            SendStatusResponse(UART_MSG_STATUS, req.sequence, GetPowerStateOrUnknown());
+            send_status_response(UART_MSG_STATUS, req.sequence, get_power_state_or_unknown());
             break;
         }
 
         case UART_MSG_PAYLOAD:
         {
-            const UartPayload_t payload = BuildPayload(PAYLOAD_NODE_ID);
-            UartProtocol_SendFrame(req.msg_type, req.sequence, &payload, sizeof(payload));
+            const UartPayload_t payload = build_payload(PAYLOAD_NODE_ID);
+            uart_protocol_send_frame(req.msg_type, req.sequence, &payload, sizeof(payload));
             break;
         }
 
         case UART_MSG_BATTERY:
         {
-            const UartPayload_t payload = BuildPayload(EPS_NODE_ID);
-            UartProtocol_SendFrame(req.msg_type, req.sequence, &payload, sizeof(payload));
+            const UartPayload_t payload = build_payload(EPS_NODE_ID);
+            uart_protocol_send_frame(req.msg_type, req.sequence, &payload, sizeof(payload));
             break;
         }
 
         case UART_MSG_SET_TIME:
         {
             if (req.payload_length != sizeof(UartSetTimePayload_t)) {
-                SendError(req.sequence, UART_STATUS_BAD_REQUEST);
+                send_error(req.sequence, UART_STATUS_BAD_REQUEST);
                 break;
             }
 
             UartSetTimePayload_t request = {};
             std::memcpy(&request, req.payload, sizeof(request));
-            if (RTC_set_epoch(request.epoch_s) == 0u) {
-                SendError(req.sequence, UART_STATUS_BAD_REQUEST);
+            if (rtc_set_epoch(request.epoch_s) == 0u) {
+                send_error(req.sequence, UART_STATUS_BAD_REQUEST);
                 break;
             }
 
-            UartProtocol_SendFrame(req.msg_type, req.sequence, nullptr, 0u);
+            uart_protocol_send_frame(req.msg_type, req.sequence, nullptr, 0u);
             break;
         }
 
         case UART_MSG_FETCH:
         {
             if (req.payload_length != sizeof(UartFetchPayload_t)) {
-                SendError(req.sequence, UART_STATUS_BAD_REQUEST);
+                send_error(req.sequence, UART_STATUS_BAD_REQUEST);
                 break;
             }
 
@@ -260,52 +260,52 @@ void HandleRequest(const UartRequest_t& req)
             std::memcpy(&request, req.payload, sizeof(request));
 
             if ((request.from_epoch_s > request.to_epoch_s) || (request.volume > 1u)) {
-                SendError(req.sequence, UART_STATUS_BAD_REQUEST);
+                send_error(req.sequence, UART_STATUS_BAD_REQUEST);
                 break;
             }
 
-            if (SdLogger_RequestFetch(req.sequence, &request) == 0u) {
-                SendError(req.sequence, UART_STATUS_BUSY);
+            if (sd_logger_request_fetch(req.sequence, &request) == 0u) {
+                send_error(req.sequence, UART_STATUS_BUSY);
             }
             break;
         }
 
         default:
-            SendError(req.sequence, UART_STATUS_UNKNOWN_MESSAGE);
+            send_error(req.sequence, UART_STATUS_UNKNOWN_MESSAGE);
             break;
     }
 }
 }
 
-void ObcController_Init(I2C_HandleTypeDef* i2c_handle)
+void obc_controller_init(I2C_HandleTypeDef* i2c_handle)
 {
     automatic_status_sequence = 0u;
 
-    I2CMaster_Init(i2c_handle);
-    UartProtocol_Init();
+    i2c_master_init(i2c_handle);
+    uart_protocol_init();
 
 #if defined(__GNUC__)
-    if (Schedule_Init != nullptr)
+    if (schedule_init != nullptr)
     {
-        Schedule_Init();
+        schedule_init();
     }
 #else
-    Schedule_Init();
+    schedule_init();
 #endif
 
-    SendUartMsg("OBC UART protocol ready");
+    send_uart_msg("OBC UART protocol ready");
 }
 
 // handles incoming messages
-void ObcController_Process(void)
+void obc_controller_process(void)
 {
     UartRequest_t request;
 
-    while (UartProtocol_TryReceiveRequest(&request) != 0u)
+    while (uart_protocol_try_receive_request(&request) != 0u)
     {
-        HandleRequest(request);
+        handle_request(request);
     }
 
     // Answer operator requests first, then check the automatic schedule.
-    ProcessAutomaticStatus();
+    process_automatic_status();
 }

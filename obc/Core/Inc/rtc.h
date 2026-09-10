@@ -45,13 +45,13 @@ void MX_RTC_Init(void);
 
 /* USER CODE BEGIN Prototypes */
 
-void RTC_record_boot(uint32_t reset_flags);
-uint32_t RTC_get_boot_count(void);
-uint32_t RTC_get_reset_flags(void);
-void RTC_set_last_epoch(uint32_t epoch);
-uint8_t RTC_set_epoch(uint32_t epoch);
-uint8_t RTC_time_is_valid(void);
-uint32_t RTC_get_epoch(void);
+void rtc_record_boot(uint32_t reset_flags);
+uint32_t rtc_get_boot_count(void);
+uint32_t rtc_get_reset_flags(void);
+void rtc_set_last_epoch(uint32_t epoch);
+uint8_t rtc_set_epoch(uint32_t epoch);
+uint8_t rtc_time_is_valid(void);
+uint32_t rtc_get_epoch(void);
 
 /* USER CODE END Prototypes */
 

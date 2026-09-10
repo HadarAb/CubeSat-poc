@@ -41,7 +41,7 @@ typedef struct
  * Creates the priority-inheriting mutex for the telemetry snapshot.
  * Must be called before the FreeRTOS scheduler starts.
  */
-void PayloadCollector_Init(void);
+void payload_collector_init(void);
 
 /**
  * @brief Main FreeRTOS task loop for the Payload/EPS telemetry collector.
@@ -59,12 +59,12 @@ void payload_collector_run(void);
  * @param out Pointer to the Snapshot struct to copy the data into
  * @return true if the snapshot contains valid data, false otherwise
  */
-bool PayloadCollector_GetSnapshot(uint8_t node_id, Snapshot *out);
+bool payload_collector_get_snapshot(uint8_t node_id, Snapshot *out);
 
 /**
  * @brief Safely reads the collector's cached node and queue health.
  */
-bool PayloadCollector_GetStatus(PayloadCollectorStatus_t* out);
+bool payload_collector_get_status(PayloadCollectorStatus_t* out);
 
 #ifdef __cplusplus
 }

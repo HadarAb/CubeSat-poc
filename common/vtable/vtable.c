@@ -1,4 +1,4 @@
-/* Fixed-capacity, allocation-free VTable implementation. */
+// Fixed-capacity, allocation-free VTable implementation.
 #include "vtable.h"
 
 #include <string.h>
@@ -11,7 +11,7 @@ static uint16_t entry_count;
 /*
  * puts char by char into normalized and at the end puts \0 till the end
  * for example TEMP ---> [T][E][M][P][\0][\0][\0][\0]*/
-static bool NormalizeName(const char* name, char normalized[VT_NAME_LEN])
+static bool normalize_name(const char* name, char normalized[VT_NAME_LEN])
 {
     bool reached_end = false;
 
@@ -46,7 +46,7 @@ static bool NormalizeName(const char* name, char normalized[VT_NAME_LEN])
 
 /*
  * from a name gives you an ID  */
-static uint32_t Fnv1a32(const char name[VT_NAME_LEN])
+static uint32_t fnv1a32(const char name[VT_NAME_LEN])
 {
     uint32_t hash = 2166136261u;
 
@@ -60,7 +60,7 @@ static uint32_t Fnv1a32(const char name[VT_NAME_LEN])
 }
 
 
-static bool TypeAndLengthAreValid(VtType_t type, uint8_t len)
+static bool type_and_length_are_valid(VtType_t type, uint8_t len)
 {
     if ((type < VT_TYPE_U32) || (type > VT_TYPE_BYTES))
     {
@@ -84,10 +84,10 @@ static bool TypeAndLengthAreValid(VtType_t type, uint8_t len)
 /*checks if the name already exists in the vtable
  * if not return slot where you can put it
  * if ye return you found it and it what slot */
-static int16_t FindSlot(const char normalized[VT_NAME_LEN], bool* found)
+static int16_t find_slot(const char normalized[VT_NAME_LEN], bool* found)
 {
 	//finds first slot by id
-    const uint32_t start = Fnv1a32(normalized) % VT_MAX_ENTRIES;
+    const uint32_t start = fnv1a32(normalized) % VT_MAX_ENTRIES;
 
     //starts sarching the vtable for a free slot
     for (uint16_t probe = 0u; probe < VT_MAX_ENTRIES; ++probe)
@@ -114,27 +114,27 @@ static int16_t FindSlot(const char normalized[VT_NAME_LEN], bool* found)
 }
 
 
-void VTable_Init(void)
+void vtable_init(void)
 {
     memset(entries, 0, sizeof(entries));
     entry_count = 0u;
 }
 
 
-bool VTable_Set(const char* name, VtType_t type, const void* value, uint8_t len,
+bool vtable_set(const char* name, VtType_t type, const void* value, uint8_t len,
                 uint32_t updated_ms)
 {
 
     char normalized[VT_NAME_LEN];
     bool found = false;
     //here you change the name via reference
-    if ((value == NULL) || !NormalizeName(name, normalized)
-        || !TypeAndLengthAreValid(type, len))
+    if ((value == NULL) || !normalize_name(name, normalized)
+        || !type_and_length_are_valid(type, len))
     {
         return false;
     }
     // find where you can put it in the vtable
-    const int16_t slot = FindSlot(normalized, &found);
+    const int16_t slot = find_slot(normalized, &found);
     if (slot < 0)
     {
         return false;
@@ -142,8 +142,10 @@ bool VTable_Set(const char* name, VtType_t type, const void* value, uint8_t len,
 
     //the pointer to the slot
     VtEntry_t* const entry = &entries[(uint16_t)slot];
-    //if the slot is fresh new and still not saved
-    // then you fill it
+    /*
+     * if the slot is fresh new and still not saved
+     * then you fill it
+     */
     if (!found)
     {
         memset(entry, 0, sizeof(*entry));
@@ -164,17 +166,17 @@ bool VTable_Set(const char* name, VtType_t type, const void* value, uint8_t len,
 }
 
 
-bool VTable_Get(const char* name, VtEntry_t* out)
+bool vtable_get(const char* name, VtEntry_t* out)
 {
     char normalized[VT_NAME_LEN];
     bool found = false;
 
-    if ((out == NULL) || !NormalizeName(name, normalized))
+    if ((out == NULL) || !normalize_name(name, normalized))
     {
         return false;
     }
 
-    const int16_t slot = FindSlot(normalized, &found);
+    const int16_t slot = find_slot(normalized, &found);
     if ((slot < 0) || !found)
     {
         return false;
@@ -188,14 +190,14 @@ bool VTable_Get(const char* name, VtEntry_t* out)
 }
 
 
-uint16_t VTable_Count(void)
+uint16_t vtable_count(void)
 {
     return entry_count;
 }
 
 
 
-bool VTable_At(uint16_t index, VtEntry_t* out)
+bool vtable_at(uint16_t index, VtEntry_t* out)
 {
     uint16_t dense_index = 0u;
 
@@ -224,16 +226,16 @@ bool VTable_At(uint16_t index, VtEntry_t* out)
 }
 
 
-/* from a name to ID */
-uint16_t VTable_HashName(const char* name)
+// from a name to ID
+uint16_t vtable_hash_name(const char* name)
 {
     char normalized[VT_NAME_LEN];
 
-    if (!NormalizeName(name, normalized))
+    if (!normalize_name(name, normalized))
     {
         return 0u;
     }
 
-    const uint32_t hash = Fnv1a32(normalized);
+    const uint32_t hash = fnv1a32(normalized);
     return (uint16_t)(hash ^ (hash >> 16u));
 }

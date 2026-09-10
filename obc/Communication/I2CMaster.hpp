@@ -1,4 +1,4 @@
-/* Public OBC interface for reading the payload through the shared I2C register protocol. */
+// Public OBC interface for reading the payload through the shared I2C register protocol.
 #pragma once
 
 #include "../../common/i2c/protocol.h"
@@ -8,11 +8,11 @@
 extern "C" {
 #endif
 
-/* Gives the module access to the I2C context and stores it in i2c_handle. */
-void I2CMaster_Init(I2C_HandleTypeDef* i2c_handle);
+// Gives the module access to the I2C context and stores it in i2c_handle.
+void i2c_master_init(I2C_HandleTypeDef* i2c_handle);
 
 /* Send REG_WHOAMI to the slave address Read 1 byte back Store that byte inside node_id */
-HAL_StatusTypeDef I2CMaster_ReadWhoAmI(uint16_t slave_address, uint8_t* node_id);
+HAL_StatusTypeDef i2c_master_read_who_am_i(uint16_t slave_address, uint8_t* node_id);
 
 typedef enum
 {
@@ -24,7 +24,7 @@ typedef enum
 } I2CKeyReadResult_t;
 
 /* Selects one VTable key, reads REG_VT_VALUE, and validates its wire contract. */
-I2CKeyReadResult_t I2CMaster_ReadKey(uint16_t slave_address, const char* key,
+I2CKeyReadResult_t i2c_master_read_key(uint16_t slave_address, const char* key,
                                      VtType_t expected_type, VtValueWire_t* value);
 
 #ifdef __cplusplus
